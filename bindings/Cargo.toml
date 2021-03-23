@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+  "dpdk",
+  "dpdk-sys"
+]

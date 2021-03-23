@@ -1,0 +1,24 @@
+
+%static_use_defs%
+
+extern "C" {
+%explicit_use_defs%
+}
+
+/// Return persist links
+pub fn load_drivers() {
+    // # Safety
+    // Following function calls return function pointers.
+    // In most cases, they have no effect.
+    unsafe {
+%explicit_invokes%
+    }
+}
+
+/// Auto-generated Static EAL functions
+/// 
+/// # Safety
+/// This implementation must be used after `rte_eal_init` and never used after `rte_eal_cleanup`.
+pub unsafe trait EalStaticFunctions {
+%static_eal_functions%
+}
