@@ -47,8 +47,11 @@ struct State {
     /// Essential link path for C standard library.
     system_include_path: Vec<String>,
 
-    /// DPDK include folder.
-    include_path: Option<PathBuf>,
+    /// Machine string
+    machine_string: Option<String>,
+
+    /// DPDK include folders.
+    include_path: Vec<PathBuf>,
 
     /// DPDK lib folder.
     library_path: Option<PathBuf>,
@@ -87,6 +90,7 @@ impl State {
         Self {
             project_path,
             out_path,
+            machine_string: None,
             system_include_path: Default::default(),
             include_path: Default::default(),
             library_path: Default::default(),
@@ -104,15 +108,15 @@ impl State {
     fn trans_unit_from_header<'a>(
         &self,
         index: &'a clang::Index,
-        header_path: PathBuf,
+        header_path: &Path,
     ) -> clang::TranslationUnit<'a> {
-        let mut argument = vec![
-            "-march=native".into(),
-            format!(
-                "-I{}",
-                self.include_path.as_ref().unwrap().to_str().unwrap()
-            ),
-            //.to_string(),
+        let mut argument = vec!["-march=native".into()];
+        argument.extend(
+            self.include_path
+                .iter()
+                .map(|path| format!("-I{}", path.display())),
+        );
+        argument.extend(vec![
             format!("-I{}", self.out_path.to_str().unwrap()), //.to_string(),
             "-imacros".into(),
             self.dpdk_config
@@ -121,7 +125,7 @@ impl State {
                 .to_str()
                 .unwrap()
                 .to_string(),
-        ];
+        ]);
         for path in self.system_include_path.iter() {
             argument.push(format!("-I{}", path).to_string());
         }
@@ -172,25 +176,54 @@ impl State {
     /// Thus, it is difficult to obtain build path manually.
     /// Currently, one must install DPDK to one's system.
     /// This function validates whether DPDK is installed.
-    fn find_dpdk(&mut self, install_path: &str) {
+    fn find_dpdk(&mut self, install_path: &Option<String>) {
         // To find correct lib path of this platform.
-        let config_header = PathBuf::from(format!("{}/usr/local/include/rte_config.h", install_path));
-        if config_header.exists() {
-            let machine_string = Command::new("cc")
-                        .args(&["-dumpmachine"])
-                        .output()
-                        .expect("failed obtain current machine");
-            let machine_string = String::from(String::from_utf8(machine_string.stdout).unwrap().trim());
-            self.include_path = Some(PathBuf::from(format!("{}/usr/local/include", install_path)));
-            // TODO: check library_path without machine_string too
-            self.library_path = Some(PathBuf::from(format!("{}/usr/local/lib/{}", install_path, machine_string)));
-        } else {
-            panic!(format!("DPDK is not installed on your system! (Cannot find {}/usr/local/include/dpdk/rte_config.h)", install_path))
-        }
-        println!(
-            "cargo:rerun-if-changed={}",
-            self.include_path.as_ref().unwrap().to_str().unwrap()
+        let full_install_path = match install_path {
+            Some(install_path) => Path::new(&install_path).join("usr/local"),
+            None => PathBuf::from("/usr"),
+        };
+        let machine_string = Command::new("cc")
+            .args(&["-dumpmachine"])
+            .output()
+            .expect("failed obtain current machine");
+        self.machine_string = Some(
+            String::from_utf8(machine_string.stdout)
+                .unwrap()
+                .trim()
+                .to_owned(),
         );
+        let machine_string = &self.machine_string.as_ref().unwrap();
+
+        let config_header = match install_path {
+            Some(_) => full_install_path.join("include/rte_config.h"),
+            None => full_install_path
+                .join("include")
+                .join(&machine_string)
+                .join("dpdk/rte_config.h"),
+        };
+        if !config_header.exists() {
+            panic!(
+                "DPDK is not installed on your system! (Cannot find {})",
+                config_header.display()
+            );
+        }
+        self.include_path = match install_path {
+            Some(_) => vec![full_install_path.join("include")],
+            None => vec![
+                full_install_path.join("include/dpdk"),
+                full_install_path
+                    .join("include")
+                    .join(machine_string)
+                    .join("dpdk"),
+            ],
+        };
+
+        // TODO: check library_path without machine_string too
+        self.library_path = Some(full_install_path.join("lib").join(machine_string));
+
+        for path in &self.include_path {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
         println!(
             "cargo:rerun-if-changed={}",
             self.library_path.as_ref().unwrap().to_str().unwrap()
@@ -261,12 +294,15 @@ impl State {
     }
     /// Prepare a header file which contains all available DPDK headers.
     fn make_all_in_one_header(&mut self) {
-        let include_dir = self.include_path.as_ref().unwrap();
         let dpdk_config = self.dpdk_config.as_ref().unwrap();
         // dlb drivers have duplicated enum definitions.
         let blacklist = vec!["rte_pmd_dlb", "rte_pmd_dlb2"];
         let mut headers = vec![];
-        for entry in include_dir.read_dir().expect("read_dir failed") {
+        for entry in self
+            .include_path
+            .iter()
+            .flat_map(|path| path.read_dir().expect("read_dir failed"))
+        {
             if let Ok(entry) = entry {
                 let path = entry.path();
 
@@ -446,15 +482,24 @@ impl State {
         let mut use_def_map = HashMap::new();
 
         for header_name in &headers_whitelist {
-            let header_path = self.include_path.as_ref().unwrap().join(header_name);
-            if !header_path.exists() {
-                // In case where our whitelist is outdated.
-                println!("cargo:warning=EAL header whitelist is outdated. Contact maintainers.");
-                continue;
-            }
+            let header_path = match self
+                .include_path
+                .iter()
+                .map(|path| path.join(header_name))
+                .find(|path| path.exists())
+            {
+                None => {
+                    // In case where our whitelist is outdated.
+                    println!(
+                        "cargo:warning=EAL header whitelist is outdated. Contact maintainers."
+                    );
+                    continue;
+                }
+                Some(path) => path,
+            };
             let clang = clang::Clang::new().unwrap();
             let index = clang::Index::new(&clang, true, true);
-            let trans_unit = self.trans_unit_from_header(&index, header_path);
+            let trans_unit = self.trans_unit_from_header(&index, &header_path);
 
             // Iterate through each EAL header files and extract function definitions.
             'each_function: for f in trans_unit
@@ -534,7 +579,7 @@ impl State {
         let header_path = self.out_path.join("dpdk.h");
         let clang = clang::Clang::new().unwrap();
         let index = clang::Index::new(&clang, true, true);
-        let trans_unit = self.trans_unit_from_header(&index, header_path);
+        let trans_unit = self.trans_unit_from_header(&index, &header_path);
 
         // List of `static inline` functions (definitions).
         let mut static_def_list = vec![];
@@ -718,15 +763,17 @@ impl State {
 
     /// Generate Rust bindings from DPDK source.
     fn generate_rust_def(&mut self) {
-        let dpdk_include_path = self.include_path.as_ref().unwrap();
         let dpdk_config_path = self.dpdk_config.as_ref().unwrap();
 
         let header_path = self.out_path.join("static.h");
         let target_path = self.out_path.join("dpdk.rs");
-        bindgen::builder()
+        let mut builder = bindgen::builder()
             .derive_default(true)
-            .header(header_path.to_str().unwrap())
-            .clang_arg(format!("-I{}", dpdk_include_path.to_str().unwrap()))
+            .header(header_path.to_str().unwrap());
+        for path in &self.include_path {
+            builder = builder.clang_arg(format!("-I{}", path.display()));
+        }
+        builder
             .clang_arg(format!("-I{}", self.out_path.to_str().unwrap()))
             .clang_arg("-imacros")
             .clang_arg(dpdk_config_path.to_str().unwrap())
@@ -799,7 +846,6 @@ impl State {
 
     /// Do compile.
     fn compile(&mut self) {
-        let dpdk_include_path = self.include_path.as_ref().unwrap();
         let dpdk_config = self.dpdk_config.as_ref().unwrap();
         let source_path = self.out_path.join("static.c");
         let lib_path = self.library_path.as_ref().unwrap();
@@ -809,7 +855,7 @@ impl State {
             .static_flag(true)
             .shared_flag(false)
             .opt_level(3)
-            .include(dpdk_include_path)
+            .includes(&self.include_path)
             .include(&self.out_path)
             .flag("-w") // hide warnings
             .flag("-march=native")
@@ -847,7 +893,10 @@ impl State {
 
 fn main() {
     let mut state = State::new();
-    let dpdk_install_path = env::var("DPDK_INSTALL_PATH").expect("Path to DPDK install path not specified (as env variable)");
+    let dpdk_install_path = env::var("DPDK_INSTALL_PATH").ok();
+    if dpdk_install_path.is_none() {
+        eprintln!("Path to DPDK install path not specified (as env variable DPDK_INSTALL_PATH), attempting system path");
+    }
     state.check_os();
     state.check_compiler();
     state.find_dpdk(&dpdk_install_path);
