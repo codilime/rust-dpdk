@@ -9,4 +9,10 @@
 mod dpdk;
 pub use dpdk::*;
 
+#[link(name = "bsd")]
+extern {}
+
+#[link(name = "pcap")]
+extern {}
+
 include!(concat!(env!("OUT_DIR"), "/lib.rs"));
