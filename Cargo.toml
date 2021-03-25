@@ -1,0 +1,7 @@
+[workspace]
+
+members = [
+    "apps",
+    "bindings/dpdk-sys",
+    "bindings/dpdk",
+]
