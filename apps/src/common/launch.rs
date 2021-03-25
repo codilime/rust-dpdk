@@ -51,10 +51,11 @@ pub fn remote_launch<T>(callback: LcoreFunc<T>, arg: Option<T>, slave_id: lcore:
 /// Launch a function on all lcores.
 pub fn mp_remote_launch<T>(callback: LcoreFunc<T>, arg: Option<T>, skip_master: bool) -> Result<()> {
     let ctxt = Box::into_raw(Box::new(LcoreContext::<T> { callback, arg })) as *mut c_void;
+
     let call_master = if skip_master {
-        ffi::rte_rmt_call_main_t_SKIP_MAIN
+        ffi::compat::rte_rmt_call_main_t_SKIP_MAIN
     } else {
-        ffi::rte_rmt_call_main_t_CALL_MAIN
+        ffi::compat::rte_rmt_call_main_t_CALL_MAIN
     };
 
     unsafe { ffi::rte_eal_mp_remote_launch(Some(lcore_stub::<T>), ctxt, call_master) }

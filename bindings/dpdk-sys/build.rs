@@ -840,6 +840,14 @@ impl State {
                 .join("\n"),
         );
 
+        if formatted_string.contains("rte_get_main_lcore") {
+            println!(r#"cargo:rustc-cfg=main_lcore_name="main""#);
+        } else if formatted_string.contains("rte_get_master_lcore") {
+            println!(r#"cargo:rustc-cfg=main_lcore_name="master""#);
+        } else {
+            panic!("neither rte_get_main_lcore nor rte_get_master_lcore found");
+        }
+
         let mut target = File::create(target_path).unwrap();
         target.write_fmt(format_args!("{}", formatted_string)).ok();
     }

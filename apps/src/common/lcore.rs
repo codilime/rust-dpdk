@@ -85,7 +85,7 @@ impl Id {
     }
 
     pub fn is_master(self) -> bool {
-        unsafe { ffi::rte_get_main_lcore() == self.0 }
+        unsafe { ffi::compat::rte_get_main_lcore() == self.0 }
     }
 
     /// Get the next enabled lcore ID.
@@ -138,7 +138,7 @@ pub fn enabled() -> Vec<Id> {
 
 /// Get the id of the master lcore
 pub fn master() -> Id {
-    unsafe { id(ffi::rte_get_main_lcore()) }
+    unsafe { id(ffi::compat::rte_get_main_lcore()) }
 }
 
 /// Return the number of execution units (lcores) on the system.
