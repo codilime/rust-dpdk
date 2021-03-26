@@ -16,6 +16,7 @@ use std::str::FromStr;
 use rte::ethdev::{EthDevice, EthDeviceInfo, TxBuffer};
 use rte::ffi::RTE_MAX_ETHPORTS;
 use rte::lcore::RTE_MAX_LCORE;
+use rte::ether::RTE_ETHER_ADDR_LEN;
 use rte::memory::AsMutRef;
 use rte::*;
 
@@ -54,6 +55,7 @@ struct Conf {
     txd_nb: u16,
 
     tx_buffs: [ethdev::RawTxBufferPtr; RTE_MAX_ETHPORTS as usize],
+    port_eth_addrs: [[u8; RTE_ETHER_ADDR_LEN]; RTE_MAX_ETHPORTS as usize],
     queue_conf: [LcoreQueueConf; RTE_MAX_LCORE as usize],
 }
 
@@ -201,18 +203,18 @@ fn check_all_ports_link_status(enabled_devices: &Vec<ethdev::PortId>) {
     }
 }
 
-fn l2fwd_mac_updating(m: &mut mbuf::MBuf) {
-    let dst_ptr: std::ptr::NonNull<[u8; 6usize]> = m.mtod();
-    let src_ptr: std::ptr::NonNull<[u8; 6usize]> = m.mtod_offset(6);
+fn l2fwd_mac_updating(m: &mut mbuf::MBuf, dst_port: &ethdev::PortId, shared_conf: &Conf) {
+    let dst_ptr: std::ptr::NonNull<[u8; RTE_ETHER_ADDR_LEN]> = m.mtod();
+    let src_ptr: std::ptr::NonNull<[u8; RTE_ETHER_ADDR_LEN]> = m.mtod_offset(6);
     unsafe {
-        *dst_ptr.as_ptr() = [0, 0, 3, 4, 5, 6];
-        *src_ptr.as_ptr() = [0, 0, 6, 5, 4, 3];
+        *dst_ptr.as_ptr() = [2, 0, 0, 0, 0, *dst_port as u8];
+        *src_ptr.as_ptr() = shared_conf.port_eth_addrs[*dst_port as usize];
     }
 }
 
-fn l2fwd_simple_forward(m: &mut mbuf::MBuf, dst_port: &ethdev::PortId, tx_buffer: ethdev::RawTxBufferPtr) {
-    l2fwd_mac_updating(m);
-    let sent = dst_port.tx_buffer(0, tx_buffer, m);
+fn l2fwd_simple_forward(m: &mut mbuf::MBuf, dst_port: &ethdev::PortId, shared_conf: &Conf) {
+    l2fwd_mac_updating(m, dst_port, shared_conf);
+    let sent = dst_port.tx_buffer(0, shared_conf.tx_buffs[*dst_port as usize], m);
     if sent > 0 {
         println!("automatically flushed {} packets to port {}", sent, dst_port);
     }
@@ -226,7 +228,6 @@ fn l2fwd_launch_one_lcore(conf: Option<&Conf>) -> i32 {
 
     if local_conf.forward_desc_nb == 0 {
         println!("lcore {} has nothing to do", lcore_id);
-
         return 0;
     }
 
@@ -260,7 +261,7 @@ fn l2fwd_launch_one_lcore(conf: Option<&Conf>) -> i32 {
             }
             for m_opt in &mut mbufs[..recv_nb] {
                 if let Some(m) = m_opt {
-                    l2fwd_simple_forward(m, dst_port, shared_conf.tx_buffs[*dst_port as usize]);
+                    l2fwd_simple_forward(m, dst_port, shared_conf);
                 }
             }
         }
@@ -364,7 +365,6 @@ fn main() {
 
     let port_conf = ethdev::EthConf::default();
 
-    let mut l2fwd_ports_eth_addr = [[0u8; 6usize]; RTE_MAX_ETHPORTS as usize];
     // Initialise each port
     for dev in &enabled_devices {
         let portid = dev.portid() as usize;
@@ -377,7 +377,7 @@ fn main() {
 
         let mac_addr = dev.mac_addr();
 
-        l2fwd_ports_eth_addr[portid] = *mac_addr.octets();
+        conf.port_eth_addrs[portid] = *mac_addr.octets();
 
         // init one RX queue
         dev.rx_queue_setup(0, conf.rxd_nb, None, &mut l2fwd_pktmbuf_pool)
