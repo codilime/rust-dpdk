@@ -9,6 +9,12 @@
 mod dpdk;
 pub use dpdk::*;
 
+#[link(name = "bsd")]
+extern {}
+
+#[link(name = "pcap")]
+extern {}
+
 include!(concat!(env!("OUT_DIR"), "/lib.rs"));
 
 /// Thin compatibility layer for items which names changed between dpdk 19 and 20 versions. This
