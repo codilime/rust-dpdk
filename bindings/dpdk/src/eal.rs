@@ -2,8 +2,7 @@
 use crate::ffi;
 use arrayvec::*;
 use crossbeam::thread::{Scope, ScopedJoinHandle};
-use log::{debug, info, warn};
-use std::collections::{HashMap, HashSet};
+use log::{info, warn};
 use std::convert::{TryFrom, TryInto};
 use std::ffi::CString;
 use std::fmt;
@@ -12,6 +11,7 @@ use std::mem::{size_of, MaybeUninit};
 use std::ptr::{self, NonNull};
 use std::slice;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 const MAGIC: &str = "be0dd4ab";
@@ -211,6 +211,93 @@ impl Port {
         }
     }
 
+    /// Initialize port queues. Return vector of handlers to rx and tx queues.
+    /// Should be called once.
+    #[inline]
+    pub fn init_queues<MPoolPriv: Zeroable>(&self) -> Result<(Vec<RxQ<MPoolPriv>>, Vec<TxQ>), ErrorCode> {
+        if self.inner.queues_init.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return Err(dpdk_sys::EALREADY.try_into().unwrap());
+        }
+
+        let mut dev_info: dpdk_sys::rte_eth_dev_info = unsafe { std::mem::zeroed() };
+        // Safety: foreign function.
+        unsafe { dpdk_sys::rte_eth_dev_info_get(self.inner.port_id, &mut dev_info) };
+
+        let nb_rx_queues = dev_info.nb_rx_queues;
+        let nb_tx_queues = dev_info.nb_tx_queues;
+
+        let rxq = (0..nb_rx_queues).map(|queue_id| {
+            let mpool = self.inner.eal.create_mpool(
+                format!("rxq_{}_{}_{}", MAGIC, self.inner.port_id, queue_id),
+                DEFAULT_RX_POOL_SIZE,
+                DEFAULT_RX_PER_CORE_CACHE,
+                DEFAULT_PACKET_DATA_LENGTH,
+                Some(self.socket_id()),
+            );
+            let ret = unsafe {
+                dpdk_sys::rte_eth_rx_queue_setup(
+                    self.inner.port_id,
+                    queue_id,
+                    DEFAULT_RX_DESC,
+                    self.socket_id().into(),
+                    &dev_info.default_rxconf,
+                    mpool.inner.ptr.as_ptr(),
+                )
+            };
+            assert_eq!(ret, 0);
+            RxQ {
+                inner: Arc::new(RxQInner {
+                    queue_id,
+                    port: self.clone(),
+                    mpool: mpool.inner,
+                }),
+            }
+        }).collect::<Vec<_>>();
+
+        let txq = (0..nb_tx_queues).map(|queue_id| {
+            let ret = unsafe {
+                dpdk_sys::rte_eth_tx_queue_setup(
+                    self.inner.port_id,
+                    queue_id,
+                    DEFAULT_RX_DESC,
+                    self.socket_id().into(),
+                    &dev_info.default_txconf,
+                )
+            };
+            assert_eq!(ret, 0);
+            TxQ {
+                inner: Arc::new(TxQInner {
+                    queue_id,
+                    port: self.clone(),
+                }),
+            }
+        }).collect::<Vec<_>>();
+
+        Ok((rxq, txq))
+    }
+
+    /// Change promiscuous mode.
+    #[inline]
+    pub fn set_promiscuous(&self, set : bool) {
+        unsafe {
+            if set {
+                dpdk_sys::rte_eth_promiscuous_enable(self.port_id());
+            } else {
+                dpdk_sys::rte_eth_promiscuous_disable(self.port_id());
+            }
+        }
+    }
+
+    /// Start the device.
+    #[inline]
+    pub fn start(&self) -> Result<(), ErrorCode> {
+        let ret = unsafe { dpdk_sys::rte_eth_dev_start(self.port_id()) };
+        if ret < 0 {
+            return Err(ret.try_into().unwrap());
+        }
+        Ok(())
+    }
+
     /// Returns current statistics
     #[inline]
     pub fn get_stat(&self) -> PortStat {
@@ -321,7 +408,8 @@ struct PortInner {
     owner_id: u64,
     has_stats_reset: bool,
     prev_stat: Mutex<PortStat>,
-    eal: Arc<EalInner>,
+    queues_init: AtomicBool,
+    eal: Eal,
 }
 
 impl Drop for PortInner {
@@ -340,6 +428,84 @@ impl Drop for PortInner {
         // let ret = unsafe { dpdk_sys::rte_eth_dev_owner_delete(self.owner_id) };
         // assert_eq!(ret, 0);
         info!("Port {} cleaned up", self.port_id);
+    }
+}
+
+/// Abstract type for DPDK port
+#[derive(Debug, Clone)]
+pub struct UninitPort {
+    inner: Arc<UninitPortInner>,
+}
+
+#[derive(Debug)]
+struct UninitPortInner {
+    port_id: u16,
+    eal: Eal,
+}
+
+impl UninitPort {
+    /// Initialize port. Configure specified number of rx and tx queues.
+    pub fn init(self, rx_queue_count: u16, tx_queue_count: u16) -> Port {
+        let mut owner_id = 0;
+        // Safety: foreign function.
+        let ret = unsafe { dpdk_sys::rte_eth_dev_owner_new(&mut owner_id) };
+        assert_eq!(ret, 0);
+
+        let mut owner = dpdk_sys::rte_eth_dev_owner {
+            id: owner_id,
+            // Safety: `c_char` array can accept zeroed data.
+            name: unsafe { MaybeUninit::zeroed().assume_init() },
+        };
+        let owner_name = format!("rust_dpdk_port_owner_{}", self.inner.port_id);
+        let name_cstring = CString::new(owner_name).unwrap();
+        let name_bytes = name_cstring.as_bytes_with_nul();
+        // Safety: converting &[u8] string into &[i8] string.
+        owner.name[0..name_bytes.len()]
+            .copy_from_slice(unsafe { &*(name_bytes as *const [u8] as *const [i8]) });
+        // Safety: foreign function.
+        let ret = unsafe { dpdk_sys::rte_eth_dev_owner_set(self.inner.port_id, &owner) };
+        assert_eq!(ret, 0);
+
+        let mut port = Port {
+            inner: Arc::new(PortInner {
+                port_id: self.inner.port_id,
+                owner_id,
+                has_stats_reset: true,
+                queues_init: AtomicBool::new(false),
+                // Safety: PortStat allows zeroed structure.
+                prev_stat: Mutex::new(unsafe { MaybeUninit::zeroed().assume_init() }),
+                eal: self.inner.eal.clone(),
+            }),
+        };
+
+        // TODO: allow passing configuration by argument
+        let mut port_conf: dpdk_sys::rte_eth_conf = unsafe { std::mem::zeroed() };
+        port_conf.rxmode.max_rx_pkt_len = dpdk_sys::RTE_ETHER_MAX_LEN;
+        port_conf.rxmode.mq_mode = dpdk_sys::rte_eth_rx_mq_mode_ETH_MQ_RX_NONE;
+        port_conf.txmode.mq_mode = dpdk_sys::rte_eth_tx_mq_mode_ETH_MQ_TX_NONE;
+        if rx_queue_count > 1 {
+            // Enable RSS.
+            port_conf.rxmode.mq_mode = dpdk_sys::rte_eth_rx_mq_mode_ETH_MQ_RX_RSS;
+            port_conf.rx_adv_conf.rss_conf.rss_hf = (dpdk_sys::ETH_RSS_NONFRAG_IPV4_UDP
+                | dpdk_sys::ETH_RSS_NONFRAG_IPV4_TCP)
+                .into();
+            // TODO set symmetric RSS for TCP/IP
+        }
+
+        // Configure each port with number of RX/TX queues and offload flags.
+        // Safety: foreign function.
+        let ret = unsafe {
+            dpdk_sys::rte_eth_dev_configure(port.inner.port_id, rx_queue_count, tx_queue_count, &port_conf)
+        };
+        assert_eq!(ret, 0);
+
+        let ret = unsafe { dpdk_sys::rte_eth_stats_reset(self.inner.port_id) };
+        if ret == -(dpdk_sys::ENOTSUP as i32) {
+            warn!("stats_reset is not supported. Fallback to software emulation.");
+            Arc::get_mut(&mut port.inner).unwrap().has_stats_reset = false;
+        }
+
+        port
     }
 }
 
@@ -874,269 +1040,42 @@ impl Eal {
         MPool { inner }
     }
 
-    /// Setup per-core Rx queues and Tx queues according to the given affinity.  Currently, this
-    /// must be called once for the whole program. Otherwise it will return an error code.  Returns
-    /// array of `(logical core id, assigned rx queues, assigned tx queues)` on success.
-    ///
-    /// Note: rte_lcore_count: -c ff 옵션에 따라 줄어듬.
-    /// Note: we have clippy warning: complex return type.
-    /// Note: we have clippy warning: cognitive complexity.
+    /// Get list of available, uninitialized ports.
+    /// Should be called once.
     #[inline]
-    pub fn setup<MPoolPriv: Zeroable>(
-        &self,
-        rx_affinity: Affinity,
-        tx_affinity: Affinity,
-    ) -> Result<Vec<(LCoreId, Vec<RxQ<MPoolPriv>>, Vec<TxQ>)>, ErrorCode> {
-        // Acquire globally shared state and check whether already initialized.
+    pub fn ports(&self) -> Result<Vec<UninitPort>, ErrorCode> {
         let mut shared_mut = self.inner.shared.lock().unwrap();
         if shared_mut.setup_initialized {
             // Already initialized.
             return Err(dpdk_sys::EALREADY.try_into().unwrap());
         }
-
-        // List of valid logical core ids.
-        // Note: If some cores are masked, range (0..rte_lcore_count()) will include disabled cores.
-        let lcore_id_list = (0..dpdk_sys::RTE_MAX_LCORE)
-            .filter(|index| unsafe { dpdk_sys::rte_lcore_is_enabled(*index) > 0 })
-            .collect::<Vec<_>>();
-
-        // Map of `socket_id` to set of `lcore_id`s belong to the socket.
-        let mut socket_to_lcore_map = HashMap::new();
-        for lcore_id in &lcore_id_list {
-            let lcore_id = *lcore_id;
-            // Safety: foreign function.
-            let socket_id = unsafe { dpdk_sys::rte_lcore_to_socket_id(lcore_id) };
-            // Safety: foreign function.
-            let cpu_id = unsafe { dpdk_sys::rte_lcore_to_cpu_id(lcore_id.try_into().unwrap()) };
-            debug!(
-                "Logical core {} is enabled at physical core {} (NUMA node {})",
-                lcore_id, cpu_id, socket_id
-            );
-
-            // Classify `lcore_id`s according to their socket IDs.
-            socket_to_lcore_map
-                .entry(SocketId::new(socket_id))
-                .or_insert_with(HashSet::new)
-                .insert(LCoreId::new(lcore_id));
-        }
-        debug!("lcore count: {}", socket_to_lcore_map.len());
-
-        // Generate list of `Port`s from selected `port_id`s.
         let port_list = (0..u16::try_from(dpdk_sys::RTE_MAX_ETHPORTS).unwrap())
             .filter(|index| {
                 // Safety: foreign function.
                 unsafe { dpdk_sys::rte_eth_dev_is_valid_port(*index) > 0 }
             })
             .map(|port_id| {
-                let mut owner_id = 0;
-                // Safety: foreign function.
-                let ret = unsafe { dpdk_sys::rte_eth_dev_owner_new(&mut owner_id) };
-                assert_eq!(ret, 0);
-
-                let mut owner = dpdk_sys::rte_eth_dev_owner {
-                    id: owner_id,
-                    // Safety: `c_char` array can accept zeroed data.
-                    name: unsafe { MaybeUninit::zeroed().assume_init() },
-                };
-                let owner_name = format!("rust_dpdk_port_owner_{}", port_id);
-                let name_cstring = CString::new(owner_name).unwrap();
-                let name_bytes = name_cstring.as_bytes_with_nul();
-                // Safety: converting &[u8] string into &[i8] string.
-                owner.name[0..name_bytes.len()]
-                    .copy_from_slice(unsafe { &*(name_bytes as *const [u8] as *const [i8]) });
-                // Safety: foreign function.
-                let ret = unsafe { dpdk_sys::rte_eth_dev_owner_set(port_id, &owner) };
-                assert_eq!(ret, 0);
-
-                Port {
-                    inner: Arc::new(PortInner {
+                UninitPort {
+                    inner: Arc::new(UninitPortInner {
                         port_id,
-                        owner_id,
-                        has_stats_reset: true,
-                        // Safety: PortStat allows zeroed structure.
-                        prev_stat: Mutex::new(unsafe { MaybeUninit::zeroed().assume_init() }),
-                        eal: self.inner.clone(),
+                        eal: self.clone(),
                     }),
                 }
             })
             .collect::<Vec<_>>();
-
-        // Map from `lcore_id` to its assigned `(rxq, txq)`.
-        let mut lcore_to_rxqtxq_map = HashMap::new();
-        for mut port in port_list {
-            let port_id = port.inner.port_id;
-            let socket_id = port.socket_id();
-            // Extract RX cores and TX cores according to the given affinity information.
-            // For `Full` affinity, all cores are assigned to all cores.
-            // For `Numa` affinity, only cores on the same NUMA node are assigned to each core.
-            let rx_lcores = match rx_affinity {
-                Affinity::Full => socket_to_lcore_map.values().flatten().cloned().collect(),
-                Affinity::Numa => socket_to_lcore_map.get(&socket_id).unwrap().clone(),
-            };
-            let tx_lcores = match tx_affinity {
-                Affinity::Full => socket_to_lcore_map.values().flatten().cloned().collect(),
-                Affinity::Numa => socket_to_lcore_map.get(&socket_id).unwrap().clone(),
-            };
-
-            // Extract each port's HW spec.
-            // Safety: `rte_eth_dev_info` contains primitive integer types. Safe to fill with zeros.
-            let mut dev_info: dpdk_sys::rte_eth_dev_info = unsafe { std::mem::zeroed() };
-            // Safety: foreign function.
-            unsafe { dpdk_sys::rte_eth_dev_info_get(port_id, &mut dev_info) };
-            let rx_queue_limit = dev_info.max_rx_queues;
-            let tx_queue_limit = dev_info.max_tx_queues;
-            let rx_queue_count: u16 = rx_lcores.len().try_into().unwrap();
-            let tx_queue_count: u16 = tx_lcores.len().try_into().unwrap();
-
-            // Validate configuration numbers.
-            assert!(rx_queue_count <= rx_queue_limit);
-            assert!(tx_queue_count <= tx_queue_limit);
-            assert!(DEFAULT_RX_DESC <= dev_info.rx_desc_lim.nb_max);
-            assert!(DEFAULT_RX_DESC >= dev_info.rx_desc_lim.nb_min);
-            assert!(DEFAULT_RX_DESC % dev_info.rx_desc_lim.nb_align == 0);
-            assert!(DEFAULT_TX_DESC <= dev_info.tx_desc_lim.nb_max);
-            assert!(DEFAULT_TX_DESC >= dev_info.tx_desc_lim.nb_min);
-            assert!(DEFAULT_TX_DESC % dev_info.tx_desc_lim.nb_align == 0);
-
-            // Prepart HW configuration with offload flags.
-            // Safety: `rte_eth_conf` contains primitive integer types. Safe to fill with zeros.
-            let mut port_conf: dpdk_sys::rte_eth_conf = unsafe { std::mem::zeroed() };
-            port_conf.rxmode.max_rx_pkt_len = dpdk_sys::RTE_ETHER_MAX_LEN;
-            port_conf.rxmode.mq_mode = dpdk_sys::rte_eth_rx_mq_mode_ETH_MQ_RX_NONE;
-            port_conf.txmode.mq_mode = dpdk_sys::rte_eth_tx_mq_mode_ETH_MQ_TX_NONE;
-            if rx_queue_count > 1 {
-                // Enable RSS.
-                port_conf.rxmode.mq_mode = dpdk_sys::rte_eth_rx_mq_mode_ETH_MQ_RX_RSS;
-                port_conf.rx_adv_conf.rss_conf.rss_hf = (dpdk_sys::ETH_RSS_NONFRAG_IPV4_UDP
-                    | dpdk_sys::ETH_RSS_NONFRAG_IPV4_TCP)
-                    .into();
-                // TODO set symmetric RSS for TCP/IP
-            }
-            // Enable other offload flags
-            if dev_info.rx_offload_capa & u64::from(dpdk_sys::DEV_RX_OFFLOAD_CHECKSUM) > 0 {
-                info!("RX CKSUM Offloading is on for port {}", port_id);
-                port_conf.rxmode.offloads |= u64::from(dpdk_sys::DEV_RX_OFFLOAD_CHECKSUM);
-            }
-            if dev_info.tx_offload_capa & u64::from(dpdk_sys::DEV_TX_OFFLOAD_IPV4_CKSUM) > 0 {
-                info!("TX IPv4 CKSUM Offloading is on for port {}", port_id);
-                port_conf.txmode.offloads |= u64::from(dpdk_sys::DEV_TX_OFFLOAD_IPV4_CKSUM);
-            }
-            if dev_info.tx_offload_capa & u64::from(dpdk_sys::DEV_TX_OFFLOAD_UDP_CKSUM) > 0 {
-                info!("TX UDP CKSUM Offloading is on for port {}", port_id);
-                port_conf.txmode.offloads |= u64::from(dpdk_sys::DEV_TX_OFFLOAD_UDP_CKSUM);
-            }
-            if dev_info.tx_offload_capa & u64::from(dpdk_sys::DEV_TX_OFFLOAD_TCP_CKSUM) > 0 {
-                info!("TX TCP CKSUM Offloading is on for port {}", port_id);
-                port_conf.txmode.offloads |= u64::from(dpdk_sys::DEV_TX_OFFLOAD_TCP_CKSUM);
-            }
-
-            // Configure each port with number of RX/TX queues and offload flags.
-            // Safety: foreign function.
-            let ret = unsafe {
-                dpdk_sys::rte_eth_dev_configure(port_id, rx_queue_count, tx_queue_count, &port_conf)
-            };
-            assert_eq!(ret, 0);
-
-            // For each rx core, configure RxQ.
-            for (rxq_idx, rx_lcore) in rx_lcores.into_iter().enumerate() {
-                // Create a `MPool` dedicated for for each RxQ.
-                let mpool = self.create_mpool(
-                    format!("rxq_{}_{}_{}", MAGIC, port_id, rxq_idx),
-                    DEFAULT_RX_POOL_SIZE,
-                    DEFAULT_RX_PER_CORE_CACHE,
-                    DEFAULT_PACKET_DATA_LENGTH,
-                    Some(port.socket_id()),
-                );
-                // Safety: foreign function.
-                let ret = unsafe {
-                    dpdk_sys::rte_eth_rx_queue_setup(
-                        port_id,
-                        rxq_idx as u16,
-                        DEFAULT_RX_DESC,
-                        port.socket_id().into(),
-                        &dev_info.default_rxconf,
-                        mpool.inner.ptr.as_ptr(),
-                    )
-                };
-                assert_eq!(ret, 0);
-                let rxq = RxQ {
-                    inner: Arc::new(RxQInner {
-                        queue_id: rxq_idx as u16,
-                        port: port.clone(),
-                        mpool: mpool.inner,
-                    }),
-                };
-                // Insert created RxQ to the `lcore, (rxqs, txqs)` map.
-                lcore_to_rxqtxq_map
-                    .entry(rx_lcore)
-                    .or_insert_with(|| (Vec::new(), Vec::new()))
-                    .0
-                    .push(rxq);
-            }
-
-            // For each rx core, configure TxQ.
-            // Note: TxQ sends packets which is already allocated by other `MPool`s.
-            // Thus, we do not require dedicated `MPool`s for TxQs.
-            for (txq_idx, tx_lcore) in tx_lcores.into_iter().enumerate() {
-                // Safety: foreign function.
-                let ret = unsafe {
-                    dpdk_sys::rte_eth_tx_queue_setup(
-                        port_id,
-                        txq_idx as u16,
-                        DEFAULT_RX_DESC,
-                        port.socket_id().into(),
-                        &dev_info.default_txconf,
-                    )
-                };
-                assert_eq!(ret, 0);
-                let txq = TxQ {
-                    inner: Arc::new(TxQInner {
-                        queue_id: txq_idx as u16,
-                        port: port.clone(),
-                    }),
-                };
-                // Insert created TxQ to the `lcore, (rxqs, txqs)` map.
-                lcore_to_rxqtxq_map
-                    .entry(tx_lcore)
-                    .or_insert_with(|| (Vec::new(), Vec::new()))
-                    .1
-                    .push(txq);
-            }
-
-            // Set promisc.
-            // Safety: foreign function.
-            unsafe {
-                if DEFAULT_PROMISC {
-                    dpdk_sys::rte_eth_promiscuous_enable(port_id);
-                } else {
-                    dpdk_sys::rte_eth_promiscuous_disable(port_id);
-                }
-            };
-
-            // Start the configured port.
-            // Safety: foreign function.
-            let ret = unsafe { dpdk_sys::rte_eth_dev_start(port_id) };
-            assert_eq!(ret, 0);
-
-            // Check whether stats_reset is supported.
-            // Safety: foreign function. Uninitialized data structure will be filled.
-            let ret = unsafe { dpdk_sys::rte_eth_stats_reset(port_id) };
-            if ret == -(dpdk_sys::ENOTSUP as i32) {
-                warn!("stats_reset is not supported. Fallback to software emulation.");
-                Arc::get_mut(&mut port.inner).unwrap().has_stats_reset = false;
-            }
-
-            info!("Port {} initialized", port_id);
-        }
-
-        // Initialization finished
         shared_mut.setup_initialized = true;
+        Ok(port_list)
+    }
 
-        // Return array of `(LCore, Vec<RxQ>, Vec<TxQ>)`.
-        Ok(lcore_to_rxqtxq_map
-            .into_iter()
-            .map(|(lcore_id, (rxqs, txqs))| (lcore_id, rxqs, txqs))
-            .collect())
+    /// Get a vector of enabled lcores.
+    #[inline]
+    pub fn lcores(&self) -> Vec<LCoreId> {
+        (0..dpdk_sys::RTE_MAX_LCORE)
+            .filter(|index| unsafe { dpdk_sys::rte_lcore_is_enabled(*index) > 0 })
+            .map(|lcore_id| {
+                LCoreId::new(lcore_id)
+            })
+            .collect::<Vec<_>>()
     }
 }
 

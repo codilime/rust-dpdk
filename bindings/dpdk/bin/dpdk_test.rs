@@ -124,31 +124,35 @@ fn main() -> Result<()> {
         DEFAULT_PACKET_DATA_LENGTH,
         None,
     );
+    let port = eal.ports()?[0].clone().init(1, 1);
 
     crossbeam::thread::scope(|s| {
-        let threads = eal
-            .setup(Affinity::Full, Affinity::Full)?
-            .into_iter()
-            .map(|(lcore, rxs, txs)| {
-                let local_eal = eal.clone();
-                let local_mpool = default_mpool.clone();
-                lcore.launch(s, move || {
-                    match lcore.into() {
-                        // Core 0 action: TX packets to txq[0]
-                        0 => {
-                            sender(local_eal.clone(), local_mpool, txs[0].clone());
-                            receiver(local_eal, rxs[1].clone());
-                            true
-                        }
-                        // Otherwise, do nothing
-                        _ => true,
+        let threads = eal.lcores().into_iter().map(|lcore| {
+            let local_eal = eal.clone();
+            let local_mpool = default_mpool.clone();
+            let local_port = port.clone();
+            lcore.launch(s, move || {
+                match lcore.into() {
+                    // Core 0 action: TX packets to txq[0]
+                    0 => {
+                        info!("Lcore {:?}: starting sender and receiver", lcore);
+                        let (rxq, txq) = local_port.init_queues().unwrap();
+                        local_port.set_promiscuous(true);
+                        local_port.start().unwrap();
+                        sender(local_eal.clone(), local_mpool, txq[0].clone());
+                        receiver(local_eal, rxq[0].clone());
+                        true
                     }
-                })
+                    // Otherwise, do nothing
+                    _ => {
+                        info!("Lcore {:?}: do nothing", lcore);
+                        true
+                    }
+                }
             })
-            .collect::<Vec<_>>();
+        }).collect::<Vec<_>>();
         let ret = threads.into_iter().map(|x| x.join().unwrap()).all(|x| x);
         assert_eq!(ret, true);
         Ok(())
-    })
-    .map_err(|err| anyhow!("{:?}", err))?
+    }).map_err(|err| anyhow!("{:?}", err))?
 }
