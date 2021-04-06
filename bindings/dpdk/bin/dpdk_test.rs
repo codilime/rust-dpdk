@@ -24,8 +24,8 @@ struct TestPriv {
 }
 unsafe impl Zeroable for TestPriv {}
 
-fn sender(eal: Eal, mpool: MPool<TestPriv>, tx_queue: TxQ) {
-    let tx_port = tx_queue.port();
+fn sender(eal: Eal, mpool: MPool<TestPriv>, mut tx_queue: TxQ) {
+    let tx_port = tx_queue.port().clone();
     info!("Start TX from {:?}", tx_port.mac_addr());
 
     // Wait for the link to be connected.
@@ -124,37 +124,34 @@ fn main() -> Result<()> {
         None,
     );
     let (port, (rxq, txq)) = eal.ports()?.swap_remove(0).init(1, 1, None);
+    let lcores = eal.lcores();
 
     crossbeam::thread::scope(|s| {
-        let threads = eal
-            .lcores()
-            .into_iter()
-            .map(|lcore| {
-                let local_eal = eal.clone();
-                let local_mpool = default_mpool.clone();
-                let local_port = port.clone();
-                let local_rxq = rxq.clone();
-                let local_txq = txq.clone();
-                lcore.launch(s, move || {
-                    match lcore.into() {
-                        // Core 0 action: send packets to txq[0] and receive from rxq[0]
-                        0 => {
-                            info!("Lcore {:?}: starting sender and receiver", lcore);
-                            local_port.set_promiscuous(true);
-                            local_port.start().unwrap();
-                            sender(local_eal.clone(), local_mpool, local_txq[0].clone());
-                            receiver(local_eal, local_rxq[0].clone());
-                            true
-                        }
-                        // Otherwise, do nothing
-                        _ => {
-                            info!("Lcore {:?}: do nothing", lcore);
-                            true
-                        }
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
+        let mut threads = Vec::new();
+
+        let local_eal = eal.clone();
+        let local_mpool = default_mpool.clone();
+        let local_port = port.clone();
+        threads.push(lcores[0].launch(s, move || {
+            info!("Lcore {:?}: starting sender and receiver", 0);
+            local_port.set_promiscuous(true);
+            local_port.start().unwrap();
+            sender(
+                local_eal.clone(),
+                local_mpool,
+                txq.into_iter().nth(0).unwrap(),
+            );
+            receiver(local_eal, rxq.into_iter().nth(0).unwrap());
+            true
+        }));
+
+        for &lcore in &lcores[1..] {
+            threads.push(lcore.launch(s, move || {
+                info!("Lcore {:?}: do nothing", lcore);
+                true
+            }));
+        }
+
         let ret = threads.into_iter().map(|x| x.join().unwrap()).all(|x| x);
         assert_eq!(ret, true);
         Ok(())

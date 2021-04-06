@@ -480,11 +480,10 @@ impl UninitPort {
                 };
                 assert_eq!(ret, 0);
                 RxQ {
-                    inner: Arc::new(RxQInner {
-                        queue_id,
-                        port: port.clone(),
-                        mpool: mpool.inner,
-                    }),
+                    queue_id,
+                    port: port.clone(),
+                    mpool: mpool.inner,
+                    _not_threadsafe: PhantomData,
                 }
             })
             .collect::<Vec<_>>();
@@ -502,10 +501,8 @@ impl UninitPort {
                 };
                 assert_eq!(ret, 0);
                 TxQ {
-                    inner: Arc::new(TxQInner {
-                        queue_id,
-                        port: port.clone(),
-                    }),
+                    queue_id,
+                    port: port.clone(),
                 }
             })
             .collect::<Vec<_>>();
@@ -798,21 +795,19 @@ impl<MPoolPriv: Zeroable> Drop for Packet<'_, MPoolPriv> {
 
 /// Abstract type for DPDK RxQ
 ///
-/// TODO Support per-queue RX operations
-#[derive(Debug, Clone)]
-pub struct RxQ<MPoolPriv: Zeroable> {
-    inner: Arc<RxQInner<MPoolPriv>>,
-}
-
 /// Note: RxQ requires a dedicated mempool to receive incoming packets.
 #[derive(Debug)]
-struct RxQInner<MPoolPriv: Zeroable> {
+pub struct RxQ<MPoolPriv: Zeroable> {
     queue_id: u16,
     port: Port,
     mpool: Arc<MPoolInner<MPoolPriv>>,
+    /// !Sync marker. RxQ is supposed to be accessed only from a single thread
+    // Note: This single-threaded limitation could also be implemented by making rx() take
+    // exclusive reference (`&mut self`), but currently `rx` takes `&self`.
+    _not_threadsafe: PhantomData<std::cell::Cell<u8>>,
 }
 
-impl<MPoolPriv: Zeroable> Drop for RxQInner<MPoolPriv> {
+impl<MPoolPriv: Zeroable> Drop for RxQ<MPoolPriv> {
     #[inline]
     fn drop(&mut self) {
         // Safety: foreign function.
@@ -822,7 +817,7 @@ impl<MPoolPriv: Zeroable> Drop for RxQInner<MPoolPriv> {
             unsafe { dpdk_sys::rte_eth_dev_rx_queue_stop(self.port.inner.port_id, self.queue_id) };
         if ret != 0 {
             warn!(
-                "RxQInner::drop, non-severe error code({}) while stopping queue {}:{}",
+                "RxQ::drop, non-severe error code({}) while stopping queue {}:{}",
                 ret, self.port.inner.port_id, self.queue_id
             );
         }
@@ -833,7 +828,7 @@ impl<MPoolPriv: Zeroable> RxQ<MPoolPriv> {
     /// Returns current queue index.
     #[inline]
     pub fn queue_id(&self) -> u16 {
-        self.inner.queue_id
+        self.queue_id
     }
 
     /// Receive packets and store them in the given arrayvec.
@@ -841,6 +836,9 @@ impl<MPoolPriv: Zeroable> RxQ<MPoolPriv> {
     /// Note: The lifetime of packets is a little bit too constrained, as it's tied to RxQ, but in
     /// principle it should be tied only to RxQ's mempool. This could change in the future, but
     /// seems fine for now.
+    // This conceptually needs unique borrow (`&mut self`,) but it takes `&self` reference, because
+    // we want Packet to only have shared borrow of self. Because of that RxQ is marked as !Sync
+    // (to block calling rx() from multiple threads).
     #[inline]
     pub fn rx<'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
         &'pool self,
@@ -851,8 +849,8 @@ impl<MPoolPriv: Zeroable> RxQ<MPoolPriv> {
         unsafe {
             let pkt_buffer = buffer.as_mut_ptr() as *mut *mut dpdk_sys::rte_mbuf;
             let cnt = dpdk_sys::rte_eth_rx_burst(
-                self.inner.port.inner.port_id,
-                self.inner.queue_id,
+                self.port.inner.port_id,
+                self.queue_id,
                 pkt_buffer.add(current),
                 remaining as u16,
             );
@@ -863,26 +861,22 @@ impl<MPoolPriv: Zeroable> RxQ<MPoolPriv> {
     /// Get port of this queue.
     #[inline]
     pub fn port(&self) -> &Port {
-        &self.inner.port
+        &self.port
     }
 }
 
 /// Abstract type for DPDK TxQ
-#[derive(Debug, Clone)]
-pub struct TxQ {
-    inner: Arc<TxQInner>,
-}
-
+///
 /// Note: while RxQ requires a dedicated mempool, Tx operation takes `MBuf`s which are allocated by
 /// other RxQ's mempool or other externally allocated mempools. Thus, TxQ itself does not require
 /// its own mempool.
 #[derive(Debug)]
-struct TxQInner {
+pub struct TxQ {
     queue_id: u16,
     port: Port,
 }
 
-impl Drop for TxQInner {
+impl Drop for TxQ {
     #[inline]
     fn drop(&mut self) {
         // Safety: foreign function.
@@ -892,7 +886,7 @@ impl Drop for TxQInner {
             unsafe { dpdk_sys::rte_eth_dev_tx_queue_stop(self.port.inner.port_id, self.queue_id) };
         if ret != 0 {
             warn!(
-                "TxQInner::drop, non-severe error code({}) while stopping queue {}:{}",
+                "TxQ::drop, non-severe error code({}) while stopping queue {}:{}",
                 ret, self.port.inner.port_id, self.queue_id
             );
         }
@@ -903,14 +897,16 @@ impl TxQ {
     /// Returns current queue index.
     #[inline]
     pub fn queue_id(&self) -> u16 {
-        self.inner.queue_id
+        self.queue_id
     }
 
     /// Try transmit packets in the given arrayvec buffer.
     /// All packets in the buffer will be sent.
+    // Note: This function would compile also with &self receiver, but we're using &mut to prevent
+    // calling tx() from multiple threads.
     #[inline]
     pub fn tx<'a, MPoolPriv: Zeroable + 'a, A: Array<Item = Packet<'a, MPoolPriv>>>(
-        &self,
+        &mut self,
         buffer: &mut ArrayVec<A>,
     ) {
         let current = buffer.len();
@@ -925,8 +921,8 @@ impl TxQ {
         // Safety: `pkt_buffer` is safe to read till `pkt_buffer[current]`.
         let cnt = unsafe {
             dpdk_sys::rte_eth_tx_burst(
-                self.inner.port.inner.port_id,
-                self.inner.queue_id,
+                self.port.inner.port_id,
+                self.queue_id,
                 pkt_buffer,
                 current as u16,
             ) as usize
@@ -946,7 +942,7 @@ impl TxQ {
     /// All packets in the buffer will be sent or be abandoned.
     #[inline]
     pub fn tx_cloned<'a, MPoolPriv: Zeroable + 'a, A: Array<Item = Packet<'a, MPoolPriv>>>(
-        &self,
+        &mut self,
         buffer: &ArrayVec<A>,
     ) {
         let current = buffer.len();
@@ -967,8 +963,8 @@ impl TxQ {
         // Safety: `pkt_buffer` is safe to read till `pkt_buffer[current]`.
         let cnt = unsafe {
             dpdk_sys::rte_eth_tx_burst(
-                self.inner.port.inner.port_id,
-                self.inner.queue_id,
+                self.port.inner.port_id,
+                self.queue_id,
                 pkt_buffer,
                 current as u16,
             )
@@ -986,7 +982,7 @@ impl TxQ {
     /// Get port of this queue.
     #[inline]
     pub fn port(&self) -> &Port {
-        &self.inner.port
+        &self.port
     }
 }
 
