@@ -24,7 +24,7 @@ struct TestPriv {
 }
 unsafe impl Zeroable for TestPriv {}
 
-fn sender(eal: &Eal, mpool: &MPool<TestPriv>, mut tx_queue: TxQ) {
+fn sender<'pool>(eal: &Eal, mpool: &'pool MPool<TestPriv>, mut tx_queue: TxQ<'pool>) {
     let tx_port = tx_queue.port().clone();
     info!("Start TX from {:?}", tx_port.mac_addr());
 
@@ -35,7 +35,6 @@ fn sender(eal: &Eal, mpool: &MPool<TestPriv>, mut tx_queue: TxQ) {
     info!("TX Link is up {:?}", tx_port.mac_addr());
 
     let mut pkts = ArrayVec::<[Packet<TestPriv>; DEFAULT_TX_BURST]>::new();
-    // Safety: packet is created and transmitted before `mpool` is destroyed.
     mpool.alloc_bulk(&mut pkts);
     pkts.iter_mut().for_each(|pkt| {
         pkt.priv_data_mut().to_port = tx_port.port_id();
@@ -79,8 +78,6 @@ fn sender(eal: &Eal, mpool: &MPool<TestPriv>, mut tx_queue: TxQ) {
     }
 
     info!("TX finished. {:?}", tx_port.get_stat());
-
-    // Safety: mpool must not be deallocated before TxQ is destroyed.
 }
 
 fn receiver(eal: &Eal, rx_queue: RxQ<TestPriv>) {

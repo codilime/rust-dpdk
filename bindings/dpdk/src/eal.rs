@@ -390,7 +390,7 @@ impl UninitPort {
         rx_queue_count: u16,
         tx_queue_count: u16,
         opt_port_conf: Option<RteEthConf>,
-    ) -> (Port, (Vec<RxQ<MPoolPriv>>, Vec<TxQ>)) {
+    ) -> (Port, (Vec<RxQ<MPoolPriv>>, Vec<TxQ<'static>>)) {
         let mut dev_info: dpdk_sys::rte_eth_dev_info = unsafe { std::mem::zeroed() };
         // Safety: foreign function.
         unsafe { dpdk_sys::rte_eth_dev_info_get(self.port_id, &mut dev_info) };
@@ -503,6 +503,7 @@ impl UninitPort {
                 TxQ {
                     queue_id,
                     port: port.clone(),
+                    _pool: PhantomData,
                 }
             })
             .collect::<Vec<_>>();
@@ -531,6 +532,8 @@ pub unsafe trait Zeroable: Sized {
         unsafe { MaybeUninit::zeroed().assume_init() }
     }
 }
+
+unsafe impl Zeroable for () {}
 
 /// Abstract type for DPDK MPool
 #[derive(Debug, Clone)]
@@ -870,13 +873,16 @@ impl<MPoolPriv: Zeroable> RxQ<MPoolPriv> {
 /// Note: while RxQ requires a dedicated mempool, Tx operation takes `MBuf`s which are allocated by
 /// other RxQ's mempool or other externally allocated mempools. Thus, TxQ itself does not require
 /// its own mempool.
+///
+/// Note: The 'pool lifetime parameter ensures that MPool used in [`TxQ::tx()`] outlives the TxQ
 #[derive(Debug)]
-pub struct TxQ {
+pub struct TxQ<'pool> {
     queue_id: u16,
     port: Port,
+    _pool: PhantomData<&'pool MPool<()>>,
 }
 
-impl Drop for TxQ {
+impl Drop for TxQ<'_> {
     #[inline]
     fn drop(&mut self) {
         // Safety: foreign function.
@@ -893,7 +899,7 @@ impl Drop for TxQ {
     }
 }
 
-impl TxQ {
+impl<'pool> TxQ<'pool> {
     /// Returns current queue index.
     #[inline]
     pub fn queue_id(&self) -> u16 {
@@ -905,7 +911,7 @@ impl TxQ {
     // Note: This function would compile also with &self receiver, but we're using &mut to prevent
     // calling tx() from multiple threads.
     #[inline]
-    pub fn tx<'a, MPoolPriv: Zeroable + 'a, A: Array<Item = Packet<'a, MPoolPriv>>>(
+    pub fn tx<MPoolPriv: Zeroable + 'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
         &mut self,
         buffer: &mut ArrayVec<A>,
     ) {
@@ -941,7 +947,7 @@ impl TxQ {
     /// Make copies of MBufs and transmit them.
     /// All packets in the buffer will be sent or be abandoned.
     #[inline]
-    pub fn tx_cloned<'a, MPoolPriv: Zeroable + 'a, A: Array<Item = Packet<'a, MPoolPriv>>>(
+    pub fn tx_cloned<MPoolPriv: Zeroable + 'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
         &mut self,
         buffer: &ArrayVec<A>,
     ) {
