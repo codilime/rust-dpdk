@@ -407,12 +407,8 @@ impl<MPoolPriv: Zeroable> Drop for MPoolInner<MPoolPriv> {
 
 impl<MPoolPriv: Zeroable> MPool<MPoolPriv> {
     /// Allocate a `Packet` from the pool.
-    ///
-    /// # Safety
-    ///
-    /// Returned item must not outlive this pool.
     #[inline]
-    pub unsafe fn alloc(&self) -> Option<Packet<MPoolPriv>> {
+    pub fn alloc(&self) -> Option<Packet<'_, MPoolPriv>> {
         // Safety: foreign function.
         // `alloc` is temporarily unsafe. Leaving this unsafe block.
         let pkt_ptr = unsafe { dpdk_sys::rte_pktmbuf_alloc(self.inner.ptr.as_ptr()) };
@@ -420,17 +416,14 @@ impl<MPoolPriv: Zeroable> MPool<MPoolPriv> {
         Some(Packet {
             ptr: NonNull::new(pkt_ptr)?,
             _phantom: PhantomData {},
+            _pool: PhantomData {},
         })
     }
 
     /// Allocate packets and fill them in the remaining capacity of the given `ArrayVec`.
-    ///
-    /// # Safety
-    ///
-    /// Returned items must not outlive this pool.
     #[inline]
-    pub unsafe fn alloc_bulk<A: Array<Item = Packet<MPoolPriv>>>(
-        &self,
+    pub fn alloc_bulk<'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
+        &'pool self,
         buffer: &mut ArrayVec<A>,
     ) -> bool {
         let current_offset = buffer.len();
@@ -457,17 +450,20 @@ impl<MPoolPriv: Zeroable> MPool<MPoolPriv> {
 }
 
 /// An owned reference to `Packet`.
-/// TODO Verify that `*mut Packet` can be transformed to `*mut *mut rte_mbuf`.
+///
+/// Equivalent to Mbuf
 #[derive(Debug)]
-pub struct Packet<MPoolPriv: Zeroable> {
+#[repr(transparent)]
+pub struct Packet<'pool, MPoolPriv: Zeroable> {
     ptr: NonNull<dpdk_sys::rte_mbuf>,
     _phantom: PhantomData<MPoolPriv>,
+    _pool: PhantomData<&'pool MPool<MPoolPriv>>,
 }
 
-unsafe impl<MPoolPriv: Zeroable> Send for Packet<MPoolPriv> {}
-unsafe impl<MPoolPriv: Zeroable> Sync for Packet<MPoolPriv> {}
+unsafe impl<MPoolPriv: Zeroable> Send for Packet<'_, MPoolPriv> {}
+unsafe impl<MPoolPriv: Zeroable> Sync for Packet<'_, MPoolPriv> {}
 
-impl<MPoolPriv: Zeroable> Packet<MPoolPriv> {
+impl<MPoolPriv: Zeroable> Packet<'_, MPoolPriv> {
     /// Returns whether `data_len` is zero.
     #[inline]
     pub fn is_empty(&self) -> bool {
@@ -613,7 +609,7 @@ impl<MPoolPriv: Zeroable> Packet<MPoolPriv> {
     }
 }
 
-impl<MPoolPriv: Zeroable> Drop for Packet<MPoolPriv> {
+impl<MPoolPriv: Zeroable> Drop for Packet<'_, MPoolPriv> {
     #[inline]
     fn drop(&mut self) {
         // Safety: foreign function.
@@ -663,9 +659,16 @@ impl<MPoolPriv: Zeroable> RxQ<MPoolPriv> {
         self.inner.queue_id
     }
 
-    /// Receive packets and store it to the given arrayvec.
+    /// Receive packets and store them in the given arrayvec.
+    ///
+    /// Note: The lifetime of packets is a little bit too constrained, as it's tied to RxQ, but in
+    /// principle it should be tied only to RxQ's mempool. This could change in the future, but
+    /// seems fine for now.
     #[inline]
-    pub fn rx<A: Array<Item = Packet<MPoolPriv>>>(&self, buffer: &mut ArrayVec<A>) {
+    pub fn rx<'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
+        &'pool self,
+        buffer: &mut ArrayVec<A>,
+    ) {
         let current = buffer.len();
         let remaining = buffer.capacity() - current;
         unsafe {
@@ -729,7 +732,7 @@ impl TxQ {
     /// Try transmit packets in the given arrayvec buffer.
     /// All packets in the buffer will be sent.
     #[inline]
-    pub fn tx<MPoolPriv: Zeroable, A: Array<Item = Packet<MPoolPriv>>>(
+    pub fn tx<'a, MPoolPriv: Zeroable + 'a, A: Array<Item = Packet<'a, MPoolPriv>>>(
         &self,
         buffer: &mut ArrayVec<A>,
     ) {
@@ -765,7 +768,7 @@ impl TxQ {
     /// Make copies of MBufs and transmit them.
     /// All packets in the buffer will be sent or be abandoned.
     #[inline]
-    pub fn tx_cloned<MPoolPriv: Zeroable, A: Array<Item = Packet<MPoolPriv>>>(
+    pub fn tx_cloned<'a, MPoolPriv: Zeroable + 'a, A: Array<Item = Packet<'a, MPoolPriv>>>(
         &self,
         buffer: &ArrayVec<A>,
     ) {

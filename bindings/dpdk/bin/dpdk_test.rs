@@ -36,7 +36,7 @@ fn sender(eal: Eal, mpool: MPool<TestPriv>, tx_queue: TxQ) {
 
     let mut pkts = ArrayVec::<[Packet<TestPriv>; DEFAULT_TX_BURST]>::new();
     // Safety: packet is created and transmitted before `mpool` is destroyed.
-    unsafe { mpool.alloc_bulk(&mut pkts) };
+    mpool.alloc_bulk(&mut pkts);
     pkts.iter_mut().for_each(|pkt| {
         pkt.priv_data_mut().to_port = tx_port.port_id();
         pkt.priv_data_mut().to_queue = tx_queue.queue_id();
