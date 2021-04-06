@@ -24,7 +24,7 @@ struct TestPriv {
 }
 unsafe impl Zeroable for TestPriv {}
 
-fn sender(eal: Eal, mpool: MPool<TestPriv>, mut tx_queue: TxQ) {
+fn sender(eal: &Eal, mpool: &MPool<TestPriv>, mut tx_queue: TxQ) {
     let tx_port = tx_queue.port().clone();
     info!("Start TX from {:?}", tx_port.mac_addr());
 
@@ -83,7 +83,7 @@ fn sender(eal: Eal, mpool: MPool<TestPriv>, mut tx_queue: TxQ) {
     // Safety: mpool must not be deallocated before TxQ is destroyed.
 }
 
-fn receiver(eal: Eal, rx_queue: RxQ<TestPriv>) {
+fn receiver(eal: &Eal, rx_queue: RxQ<TestPriv>) {
     let rx_port = rx_queue.port();
     info!("RX started at {:?}", rx_port.mac_addr());
 
@@ -129,19 +129,12 @@ fn main() -> Result<()> {
     crossbeam::thread::scope(|s| {
         let mut threads = Vec::new();
 
-        let local_eal = eal.clone();
-        let local_mpool = default_mpool.clone();
-        let local_port = port.clone();
-        threads.push(lcores[0].launch(s, move || {
+        threads.push(lcores[0].launch(s, || {
             info!("Lcore {:?}: starting sender and receiver", 0);
-            local_port.set_promiscuous(true);
-            local_port.start().unwrap();
-            sender(
-                local_eal.clone(),
-                local_mpool,
-                txq.into_iter().nth(0).unwrap(),
-            );
-            receiver(local_eal, rxq.into_iter().nth(0).unwrap());
+            port.set_promiscuous(true);
+            port.start().unwrap();
+            sender(&eal, &default_mpool, txq.into_iter().nth(0).unwrap());
+            receiver(&eal, rxq.into_iter().nth(0).unwrap());
             true
         }));
 
