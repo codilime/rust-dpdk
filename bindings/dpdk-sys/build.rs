@@ -140,10 +140,10 @@ impl State {
             .filter(|diagnostic| clang::diagnostic::Severity::Fatal == diagnostic.get_severity())
             .count();
         if fatal_diagnostics > 0 {
-            panic!(format!(
+            panic!(
                 "Encountering {} fatal parse error(s)",
                 fatal_diagnostics
-            ));
+            );
         }
         trans_unit
     }
