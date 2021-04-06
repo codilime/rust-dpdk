@@ -906,8 +906,15 @@ impl<'pool> TxQ<'pool> {
         self.queue_id
     }
 
-    /// Try transmit packets in the given arrayvec buffer.
-    /// All packets in the buffer will be sent.
+    /// Send a burst of packets on a transmit queue of an Ethernet device
+    ///
+    /// It's possible that not all packets will be transmitted (when the descriptor limit in
+    /// transmit ring is reached). In that case, the `buffer` will contain packets that were _not_
+    /// transmitted.
+    ///
+    /// Note: When the function finishes, the packets are guaranteed to be transmitted to the
+    /// `TxQ`'s internal ring, not through physical interface. You can use
+    /// [`.port().get_stat()`][`Port::get_stat`] to check port stats.
     // Note: This function would compile also with &self receiver, but we're using &mut to prevent
     // calling tx() from multiple threads.
     #[inline]
@@ -944,13 +951,16 @@ impl<'pool> TxQ<'pool> {
         unsafe { buffer.set_len(remaining) };
     }
 
-    /// Make copies of MBufs and transmit them.
-    /// All packets in the buffer will be sent or be abandoned.
+    /// Make copies of MBufs and transmit them
+    ///
+    /// Returns number of packets sent (transmitted to the send queue)
+    ///
+    /// See [`TxQ::tx()`]
     #[inline]
     pub fn tx_cloned<MPoolPriv: Zeroable + 'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
         &mut self,
         buffer: &ArrayVec<A>,
-    ) {
+    ) -> usize {
         let current = buffer.len();
 
         for pkt in buffer {
@@ -975,14 +985,17 @@ impl<'pool> TxQ<'pool> {
                 current as u16,
             )
         };
+        let cnt = usize::from(cnt);
 
         // We have to manually free unsent packets, or some packets will leak.
-        for i in cnt as usize..current {
+        for i in cnt..current {
             // Safety: foreign function.
             // Safety: pkt's refcount is already increased thus there is no use-after-free.
             unsafe { dpdk_sys::rte_pktmbuf_free(*(pkt_buffer.add(i))) };
         }
         // As all mbuf's references are already increases, we do not have to free the arrayvec.
+
+        cnt
     }
 
     /// Get port of this queue.
