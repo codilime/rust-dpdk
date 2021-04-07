@@ -107,9 +107,8 @@ fn receiver(eal: Eal, rx_queue: RxQ<TestPriv>) {
     info!("RX finished. {:?}", rx_port.get_stat());
 }
 
-/// Note: this test function only works with `sudo target/debug/dpdk_test -c 1`
 fn main() -> Result<()> {
-    simple_logger::init().unwrap();
+    simple_logger::SimpleLogger::new().init().unwrap();
     let mut args: Vec<String> = env::args().collect();
     let eal = Eal::new(&mut args).unwrap();
     debug!("TSC Hz: {}", eal.get_tsc_hz());
@@ -124,23 +123,24 @@ fn main() -> Result<()> {
         DEFAULT_PACKET_DATA_LENGTH,
         None,
     );
-    let port = eal.ports()?[0].clone().init(1, 1);
+    let (port, (rxq, txq)) = eal.ports()?.swap_remove(0).init(1, 1);
 
     crossbeam::thread::scope(|s| {
         let threads = eal.lcores().into_iter().map(|lcore| {
             let local_eal = eal.clone();
             let local_mpool = default_mpool.clone();
             let local_port = port.clone();
+            let local_rxq = rxq.clone();
+            let local_txq = txq.clone();
             lcore.launch(s, move || {
                 match lcore.into() {
-                    // Core 0 action: TX packets to txq[0]
+                    // Core 0 action: send packets to txq[0] and receive from rxq[0]
                     0 => {
                         info!("Lcore {:?}: starting sender and receiver", lcore);
-                        let (rxq, txq) = local_port.init_queues().unwrap();
                         local_port.set_promiscuous(true);
                         local_port.start().unwrap();
-                        sender(local_eal.clone(), local_mpool, txq[0].clone());
-                        receiver(local_eal, rxq[0].clone());
+                        sender(local_eal.clone(), local_mpool, local_txq[0].clone());
+                        receiver(local_eal, local_rxq[0].clone());
                         true
                     }
                     // Otherwise, do nothing
