@@ -212,7 +212,7 @@ impl Port {
 
     /// Change promiscuous mode.
     #[inline]
-    pub fn set_promiscuous(&self, set : bool) {
+    pub fn set_promiscuous(&self, set: bool) {
         unsafe {
             if set {
                 dpdk_sys::rte_eth_promiscuous_enable(self.port_id());
@@ -372,7 +372,7 @@ pub struct UninitPort {
 }
 
 pub struct RteEthConf {
-    pub data: dpdk_sys::rte_eth_conf
+    pub data: dpdk_sys::rte_eth_conf,
 }
 
 impl RteEthConf {
@@ -385,8 +385,12 @@ impl RteEthConf {
 
 impl UninitPort {
     /// Initialize port. Configure specified number of rx and tx queues.
-    pub fn init<MPoolPriv: Zeroable>(self, rx_queue_count: u16, tx_queue_count: u16, opt_port_conf: Option<RteEthConf>) ->
-            (Port, (Vec<RxQ<MPoolPriv>>, Vec<TxQ>)) {
+    pub fn init<MPoolPriv: Zeroable>(
+        self,
+        rx_queue_count: u16,
+        tx_queue_count: u16,
+        opt_port_conf: Option<RteEthConf>,
+    ) -> (Port, (Vec<RxQ<MPoolPriv>>, Vec<TxQ>)) {
         let mut dev_info: dpdk_sys::rte_eth_dev_info = unsafe { std::mem::zeroed() };
         // Safety: foreign function.
         unsafe { dpdk_sys::rte_eth_dev_info_get(self.port_id, &mut dev_info) };
@@ -446,56 +450,65 @@ impl UninitPort {
 
         // Safety: foreign function.
         let ret = unsafe {
-            dpdk_sys::rte_eth_dev_configure(port.inner.port_id, rx_queue_count, tx_queue_count, &port_conf.data)
+            dpdk_sys::rte_eth_dev_configure(
+                port.inner.port_id,
+                rx_queue_count,
+                tx_queue_count,
+                &port_conf.data,
+            )
         };
         assert_eq!(ret, 0);
 
-        let rxq = (0..rx_queue_count).map(|queue_id| {
-            let mpool = port.inner.eal.create_mpool(
-                format!("rxq_{}_{}_{}", MAGIC, port.inner.port_id, queue_id),
-                DEFAULT_RX_POOL_SIZE,
-                DEFAULT_RX_PER_CORE_CACHE,
-                DEFAULT_PACKET_DATA_LENGTH,
-                Some(port.socket_id()),
-            );
-            let ret = unsafe {
-                dpdk_sys::rte_eth_rx_queue_setup(
-                    port.inner.port_id,
-                    queue_id,
-                    DEFAULT_RX_DESC,
-                    port.socket_id().into(),
-                    &dev_info.default_rxconf,
-                    mpool.inner.ptr.as_ptr(),
-                )
-            };
-            assert_eq!(ret, 0);
-            RxQ {
-                inner: Arc::new(RxQInner {
-                    queue_id,
-                    port: port.clone(),
-                    mpool: mpool.inner,
-                }),
-            }
-        }).collect::<Vec<_>>();
+        let rxq = (0..rx_queue_count)
+            .map(|queue_id| {
+                let mpool = port.inner.eal.create_mpool(
+                    format!("rxq_{}_{}_{}", MAGIC, port.inner.port_id, queue_id),
+                    DEFAULT_RX_POOL_SIZE,
+                    DEFAULT_RX_PER_CORE_CACHE,
+                    DEFAULT_PACKET_DATA_LENGTH,
+                    Some(port.socket_id()),
+                );
+                let ret = unsafe {
+                    dpdk_sys::rte_eth_rx_queue_setup(
+                        port.inner.port_id,
+                        queue_id,
+                        DEFAULT_RX_DESC,
+                        port.socket_id().into(),
+                        &dev_info.default_rxconf,
+                        mpool.inner.ptr.as_ptr(),
+                    )
+                };
+                assert_eq!(ret, 0);
+                RxQ {
+                    inner: Arc::new(RxQInner {
+                        queue_id,
+                        port: port.clone(),
+                        mpool: mpool.inner,
+                    }),
+                }
+            })
+            .collect::<Vec<_>>();
 
-        let txq = (0..tx_queue_count).map(|queue_id| {
-            let ret = unsafe {
-                dpdk_sys::rte_eth_tx_queue_setup(
-                    port.inner.port_id,
-                    queue_id,
-                    DEFAULT_RX_DESC,
-                    port.socket_id().into(),
-                    &dev_info.default_txconf,
-                )
-            };
-            assert_eq!(ret, 0);
-            TxQ {
-                inner: Arc::new(TxQInner {
-                    queue_id,
-                    port: port.clone(),
-                }),
-            }
-        }).collect::<Vec<_>>();
+        let txq = (0..tx_queue_count)
+            .map(|queue_id| {
+                let ret = unsafe {
+                    dpdk_sys::rte_eth_tx_queue_setup(
+                        port.inner.port_id,
+                        queue_id,
+                        DEFAULT_RX_DESC,
+                        port.socket_id().into(),
+                        &dev_info.default_txconf,
+                    )
+                };
+                assert_eq!(ret, 0);
+                TxQ {
+                    inner: Arc::new(TxQInner {
+                        queue_id,
+                        port: port.clone(),
+                    }),
+                }
+            })
+            .collect::<Vec<_>>();
 
         let ret = unsafe { dpdk_sys::rte_eth_stats_reset(self.port_id) };
         if ret == -(dpdk_sys::ENOTSUP as i32) {
@@ -1052,11 +1065,9 @@ impl Eal {
                 // Safety: foreign function.
                 unsafe { dpdk_sys::rte_eth_dev_is_valid_port(*index) > 0 }
             })
-            .map(|port_id| {
-                UninitPort {
-                    port_id,
-                    eal: self.clone(),
-                }
+            .map(|port_id| UninitPort {
+                port_id,
+                eal: self.clone(),
             })
             .collect::<Vec<_>>();
         shared_mut.setup_initialized = true;
@@ -1068,19 +1079,21 @@ impl Eal {
     pub fn lcores(&self) -> Vec<LCoreId> {
         (0..dpdk_sys::RTE_MAX_LCORE)
             .filter(|index| unsafe { dpdk_sys::rte_lcore_is_enabled(*index) > 0 })
-            .map(|lcore_id| {
-                LCoreId::new(lcore_id)
-            }).collect()
+            .map(|lcore_id| LCoreId::new(lcore_id))
+            .collect()
     }
 
     /// Get a vector of enabled lcores with socket ids.
     #[inline]
     pub fn lcores_sockets(&self) -> Vec<(LCoreId, SocketId)> {
-        self.lcores().into_iter().map(|lcore_id| {
+        self.lcores()
+            .into_iter()
+            .map(|lcore_id| {
                 // Safety: foreign function.
                 let socket_id = unsafe { dpdk_sys::rte_lcore_to_socket_id(lcore_id.into()) };
                 (lcore_id, SocketId::new(socket_id))
-        }).collect()
+            })
+            .collect()
     }
 }
 

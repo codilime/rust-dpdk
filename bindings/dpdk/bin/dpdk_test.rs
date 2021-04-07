@@ -126,33 +126,38 @@ fn main() -> Result<()> {
     let (port, (rxq, txq)) = eal.ports()?.swap_remove(0).init(1, 1, None);
 
     crossbeam::thread::scope(|s| {
-        let threads = eal.lcores().into_iter().map(|lcore| {
-            let local_eal = eal.clone();
-            let local_mpool = default_mpool.clone();
-            let local_port = port.clone();
-            let local_rxq = rxq.clone();
-            let local_txq = txq.clone();
-            lcore.launch(s, move || {
-                match lcore.into() {
-                    // Core 0 action: send packets to txq[0] and receive from rxq[0]
-                    0 => {
-                        info!("Lcore {:?}: starting sender and receiver", lcore);
-                        local_port.set_promiscuous(true);
-                        local_port.start().unwrap();
-                        sender(local_eal.clone(), local_mpool, local_txq[0].clone());
-                        receiver(local_eal, local_rxq[0].clone());
-                        true
+        let threads = eal
+            .lcores()
+            .into_iter()
+            .map(|lcore| {
+                let local_eal = eal.clone();
+                let local_mpool = default_mpool.clone();
+                let local_port = port.clone();
+                let local_rxq = rxq.clone();
+                let local_txq = txq.clone();
+                lcore.launch(s, move || {
+                    match lcore.into() {
+                        // Core 0 action: send packets to txq[0] and receive from rxq[0]
+                        0 => {
+                            info!("Lcore {:?}: starting sender and receiver", lcore);
+                            local_port.set_promiscuous(true);
+                            local_port.start().unwrap();
+                            sender(local_eal.clone(), local_mpool, local_txq[0].clone());
+                            receiver(local_eal, local_rxq[0].clone());
+                            true
+                        }
+                        // Otherwise, do nothing
+                        _ => {
+                            info!("Lcore {:?}: do nothing", lcore);
+                            true
+                        }
                     }
-                    // Otherwise, do nothing
-                    _ => {
-                        info!("Lcore {:?}: do nothing", lcore);
-                        true
-                    }
-                }
+                })
             })
-        }).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         let ret = threads.into_iter().map(|x| x.join().unwrap()).all(|x| x);
         assert_eq!(ret, true);
         Ok(())
-    }).map_err(|err| anyhow!("{:?}", err))?
+    })
+    .map_err(|err| anyhow!("{:?}", err))?
 }
