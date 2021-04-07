@@ -377,7 +377,9 @@ pub struct RteEthConf {
 
 impl RteEthConf {
     pub fn new() -> RteEthConf {
-        unsafe { std::mem::zeroed() }
+        RteEthConf {
+            data: unsafe { std::mem::zeroed() },
+        }
     }
 }
 
@@ -420,14 +422,26 @@ impl UninitPort {
                 has_stats_reset: true,
                 // Safety: PortStat allows zeroed structure.
                 prev_stat: Mutex::new(unsafe { MaybeUninit::zeroed().assume_init() }),
-                eal: self.eal.clone(),
+                eal: self.eal,
             }),
         };
 
         let port_conf = if let Some(some_port_conf) = opt_port_conf {
             some_port_conf
         } else {
-            RteEthConf::new()
+            let mut port_conf = RteEthConf::new();
+            port_conf.data.rxmode.max_rx_pkt_len = dpdk_sys::RTE_ETHER_MAX_LEN;
+            port_conf.data.rxmode.mq_mode = dpdk_sys::rte_eth_rx_mq_mode_ETH_MQ_RX_NONE;
+            port_conf.data.txmode.mq_mode = dpdk_sys::rte_eth_tx_mq_mode_ETH_MQ_TX_NONE;
+            if rx_queue_count > 1 {
+                // Enable RSS.
+                port_conf.data.rxmode.mq_mode = dpdk_sys::rte_eth_rx_mq_mode_ETH_MQ_RX_RSS;
+                port_conf.data.rx_adv_conf.rss_conf.rss_hf = (dpdk_sys::ETH_RSS_NONFRAG_IPV4_UDP
+                    | dpdk_sys::ETH_RSS_NONFRAG_IPV4_TCP)
+                    .into();
+                // TODO set symmetric RSS for TCP/IP
+            }
+            port_conf
         };
 
         // Safety: foreign function.

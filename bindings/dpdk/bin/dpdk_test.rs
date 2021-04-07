@@ -123,14 +123,7 @@ fn main() -> Result<()> {
         DEFAULT_PACKET_DATA_LENGTH,
         None,
     );
-    let port_conf = {
-        let mut port_conf = RteEthConf::new();
-        port_conf.data.rxmode.max_rx_pkt_len = dpdk_sys::RTE_ETHER_MAX_LEN;
-        port_conf.data.rxmode.mq_mode = dpdk_sys::rte_eth_rx_mq_mode_ETH_MQ_RX_NONE;
-        port_conf.data.txmode.mq_mode = dpdk_sys::rte_eth_tx_mq_mode_ETH_MQ_TX_NONE;
-        port_conf
-    };
-    let (port, (rxq, txq)) = eal.ports()?.swap_remove(0).init(1, 1, Some(port_conf));
+    let (port, (rxq, txq)) = eal.ports()?.swap_remove(0).init(1, 1, None);
 
     crossbeam::thread::scope(|s| {
         let threads = eal.lcores().into_iter().map(|lcore| {
