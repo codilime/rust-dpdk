@@ -124,27 +124,21 @@ fn main() -> Result<()> {
     let lcores = eal.lcores();
 
     crossbeam::thread::scope(|s| {
-        let mut threads = Vec::new();
-
-        threads.push(lcores[0].launch(s, || {
+        lcores[0].launch(s, || {
             info!("Lcore {:?}: starting sender and receiver", 0);
             port.set_promiscuous(true);
             port.start().unwrap();
             sender(&eal, &default_mpool, txq.into_iter().nth(0).unwrap());
             receiver(&eal, rxq.into_iter().nth(0).unwrap());
-            true
-        }));
+        });
 
         for &lcore in &lcores[1..] {
-            threads.push(lcore.launch(s, move || {
+            lcore.launch(s, move || {
                 info!("Lcore {:?}: do nothing", lcore);
-                true
-            }));
+            });
         }
-
-        let ret = threads.into_iter().map(|x| x.join().unwrap()).all(|x| x);
-        assert_eq!(ret, true);
-        Ok(())
     })
-    .map_err(|err| anyhow!("{:?}", err))?
+    .map_err(|err| anyhow!("{:?}", err))?;
+
+    Ok(())
 }
