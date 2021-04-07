@@ -371,13 +371,25 @@ pub struct UninitPort {
     eal: Eal,
 }
 
+pub struct RteEthConf {
+    pub data: dpdk_sys::rte_eth_conf
+}
+
+impl RteEthConf {
+    pub fn new() -> RteEthConf {
+        unsafe { std::mem::zeroed() }
+    }
+}
+
 impl UninitPort {
     /// Initialize port. Configure specified number of rx and tx queues.
-    pub fn init<MPoolPriv: Zeroable>(self, rx_queue_count: u16, tx_queue_count: u16) -> (Port, (Vec<RxQ<MPoolPriv>>, Vec<TxQ>)) {
+    pub fn init<MPoolPriv: Zeroable>(self, rx_queue_count: u16, tx_queue_count: u16, opt_port_conf: Option<RteEthConf>) ->
+            (Port, (Vec<RxQ<MPoolPriv>>, Vec<TxQ>)) {
         let mut dev_info: dpdk_sys::rte_eth_dev_info = unsafe { std::mem::zeroed() };
         // Safety: foreign function.
         unsafe { dpdk_sys::rte_eth_dev_info_get(self.port_id, &mut dev_info) };
 
+        // TODO: return result istead of assert
         assert!(dev_info.max_rx_queues >= rx_queue_count);
         assert!(dev_info.max_tx_queues >= tx_queue_count);
 
@@ -412,23 +424,15 @@ impl UninitPort {
             }),
         };
 
-        // TODO: allow passing configuration by argument
-        let mut port_conf: dpdk_sys::rte_eth_conf = unsafe { std::mem::zeroed() };
-        port_conf.rxmode.max_rx_pkt_len = dpdk_sys::RTE_ETHER_MAX_LEN;
-        port_conf.rxmode.mq_mode = dpdk_sys::rte_eth_rx_mq_mode_ETH_MQ_RX_NONE;
-        port_conf.txmode.mq_mode = dpdk_sys::rte_eth_tx_mq_mode_ETH_MQ_TX_NONE;
-        if rx_queue_count > 1 {
-            // Enable RSS.
-            port_conf.rxmode.mq_mode = dpdk_sys::rte_eth_rx_mq_mode_ETH_MQ_RX_RSS;
-            port_conf.rx_adv_conf.rss_conf.rss_hf = (dpdk_sys::ETH_RSS_NONFRAG_IPV4_UDP
-                | dpdk_sys::ETH_RSS_NONFRAG_IPV4_TCP)
-                .into();
-            // TODO set symmetric RSS for TCP/IP
-        }
+        let port_conf = if let Some(some_port_conf) = opt_port_conf {
+            some_port_conf
+        } else {
+            RteEthConf::new()
+        };
 
         // Safety: foreign function.
         let ret = unsafe {
-            dpdk_sys::rte_eth_dev_configure(port.inner.port_id, rx_queue_count, tx_queue_count, &port_conf)
+            dpdk_sys::rte_eth_dev_configure(port.inner.port_id, rx_queue_count, tx_queue_count, &port_conf.data)
         };
         assert_eq!(ret, 0);
 
