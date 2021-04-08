@@ -4,4 +4,8 @@ members = [
     "bindings/dpdk-sys",
     "bindings/dpdk",
     "l2fwd",
+    "pkt_perf",
 ]
+
+[profile.bench]
+lto = "fat"
