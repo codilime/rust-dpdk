@@ -8,3 +8,9 @@ edition = "2018"
 
 [dependencies]
 dpdk = { path = "../bindings/dpdk" }
+structopt = "0.3"
+anyhow = "1"
+itertools = "0.10"
+log = "0.4"
+simple_logger = "1"
+smoltcp = "0.7.1"
