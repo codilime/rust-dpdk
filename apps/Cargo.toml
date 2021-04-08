@@ -16,8 +16,8 @@ cfile = "0.4"
 rand = "0.6"
 errno = "0.2"
 num-traits = "0.2"
-num-derive = "0.2"
-itertools = "0.8"
+num-derive = "0.3"
+itertools = "0.10"
 
 [build-dependencies]
 log = "0.4"
