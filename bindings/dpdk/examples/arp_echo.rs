@@ -34,7 +34,7 @@ fn sender<'pool>(eal: &Eal, mpool: &'pool MPool<TestPriv>, mut tx_queue: TxQ<'po
     }
     info!("TX Link is up {:?}", tx_port.mac_addr());
 
-    let mut pkts = ArrayVec::<[Packet<TestPriv>; DEFAULT_TX_BURST]>::new();
+    let mut pkts = ArrayVec::<Packet<TestPriv>, DEFAULT_TX_BURST>::new();
     mpool.alloc_bulk(&mut pkts);
     pkts.iter_mut().for_each(|pkt| {
         pkt.priv_data_mut().to_port = tx_port.port_id();
@@ -93,7 +93,7 @@ fn receiver(eal: &Eal, rx_queue: RxQ<TestPriv>) {
     // We will try to collect every TX packets.
     // We will collect all sent packets and additional background packets.
     // Thus we need 2 * TX_BURST to collect everything.
-    let mut pkts = ArrayVec::<[Packet<TestPriv>; DEFAULT_TX_BURST * 2]>::new();
+    let mut pkts = ArrayVec::<Packet<TestPriv>, { DEFAULT_TX_BURST * 2 }>::new();
     loop {
         rx_queue.rx(&mut pkts);
         if pkts.len() >= DEFAULT_TX_BURST {

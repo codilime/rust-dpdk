@@ -1,6 +1,6 @@
 //! Wrapper for DPDK's environment abstraction layer (EAL).
 use crate::ffi;
-use arrayvec::*;
+use arrayvec::ArrayVec;
 use crossbeam::thread::{Scope, ScopedJoinHandle};
 use log::{info, warn};
 use std::convert::{TryFrom, TryInto};
@@ -599,9 +599,9 @@ impl<MPoolPriv: Zeroable> MPool<MPoolPriv> {
 
     /// Allocate packets and fill them in the remaining capacity of the given `ArrayVec`.
     #[inline]
-    pub fn alloc_bulk<'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
+    pub fn alloc_bulk<'pool, const N: usize>(
         &'pool self,
-        buffer: &mut ArrayVec<A>,
+        buffer: &mut ArrayVec<Packet<'pool, MPoolPriv>, N>,
     ) -> bool {
         let current_offset = buffer.len();
         let capacity = buffer.capacity();
@@ -843,9 +843,9 @@ impl<MPoolPriv: Zeroable> RxQ<MPoolPriv> {
     // we want Packet to only have shared borrow of self. Because of that RxQ is marked as !Sync
     // (to block calling rx() from multiple threads).
     #[inline]
-    pub fn rx<'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
+    pub fn rx<'pool, const N: usize>(
         &'pool self,
-        buffer: &mut ArrayVec<A>,
+        buffer: &mut ArrayVec<Packet<'pool, MPoolPriv>, N>,
     ) {
         let current = buffer.len();
         let remaining = buffer.capacity() - current;
@@ -918,9 +918,9 @@ impl<'pool> TxQ<'pool> {
     // Note: This function would compile also with &self receiver, but we're using &mut to prevent
     // calling tx() from multiple threads.
     #[inline]
-    pub fn tx<MPoolPriv: Zeroable + 'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
+    pub fn tx<MPoolPriv: Zeroable, const N: usize>(
         &mut self,
-        buffer: &mut ArrayVec<A>,
+        buffer: &mut ArrayVec<Packet<'pool, MPoolPriv>, N>,
     ) {
         let current = buffer.len();
         // Safety: this block is very dangerous.
@@ -957,10 +957,7 @@ impl<'pool> TxQ<'pool> {
     ///
     /// See [`TxQ::tx()`]
     #[inline]
-    pub fn tx_cloned<MPoolPriv: Zeroable + 'pool, A: Array<Item = Packet<'pool, MPoolPriv>>>(
-        &mut self,
-        buffer: &ArrayVec<A>,
-    ) -> usize {
+    pub fn tx_cloned<MPoolPriv: Zeroable>(&mut self, buffer: &[Packet<'pool, MPoolPriv>]) -> usize {
         let current = buffer.len();
 
         for pkt in buffer {

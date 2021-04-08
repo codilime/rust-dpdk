@@ -20,4 +20,4 @@ regex = "1"
 clang = { version = "0.21.0", features = ["runtime", "clang_6_0"] }
 cc = "1"
 etrace = "1"
-itertools = "0.9"
+itertools = "0.10"
