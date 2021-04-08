@@ -4,4 +4,5 @@ members = [
     "apps",
     "bindings/dpdk-sys",
     "bindings/dpdk",
+    "l2fwd",
 ]
