@@ -3,7 +3,6 @@ extern crate cc;
 extern crate clang;
 extern crate etrace;
 extern crate itertools;
-extern crate num_cpus;
 extern crate regex;
 
 use etrace::some_or;

@@ -5,7 +5,7 @@ authors = ["Michał Niciejewski <michal.niciejewski@codilime.com>"]
 edition = "2018"
 
 [dependencies]
-rust-dpdk-sys = { path = "../bindings/dpdk-sys" }
+dpdk-sys = { path = "../bindings/dpdk-sys" }
 log = "0.4"
 bitflags = "1.0"
 failure = "0.1"

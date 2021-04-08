@@ -1,7 +1,7 @@
 [package]
 edition = "2018"
-name = "rust-dpdk"
-version = "0.2.20021"
+name = "dpdk"
+version = "0.3.0"
 authors = ["Keunhong Lee <dlrmsghd@gmail.com>", "Jeehoon Kang <jeehoon.kang@kaist.ac.kr>", "ANLAB <support@an.kaist.ac.kr>"]
 publish = false
 homepage = "https://github.com/ANLAB-KAIST/rust-dpdk"
@@ -15,18 +15,12 @@ Rust wrapper for Intel DPDK.
 """
 
 [dependencies]
-rust-dpdk-sys = { path = "../dpdk-sys" }
+dpdk-sys = { path = "../dpdk-sys" }
 thiserror = "1"
-etrace = "1"
 log = "0.4"
-simple_logger = "1"
-anyhow = "1.0"
 arrayvec = "0.5"
 crossbeam = "0.7"
 
-[lib]
-name = "dpdk"
-
-[[bin]]
-name = "dpdk_test"
-path = "bin/dpdk_test.rs"
+[dev-dependencies]
+anyhow = "1.0"
+simple_logger = "1"

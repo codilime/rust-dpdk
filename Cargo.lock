@@ -45,6 +45,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "cfile",
+ "dpdk-sys",
  "errno",
  "failure",
  "getopts",
@@ -58,7 +59,6 @@ dependencies = [
  "num_cpus",
  "pretty_env_logger",
  "rand",
- "rust-dpdk-sys",
  "time",
 ]
 
@@ -316,6 +316,31 @@ dependencies = [
  "autocfg 1.0.1",
  "cfg-if 0.1.10",
  "lazy_static",
+]
+
+[[package]]
+name = "dpdk"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "arrayvec",
+ "crossbeam",
+ "dpdk-sys",
+ "log",
+ "simple_logger",
+ "thiserror",
+]
+
+[[package]]
+name = "dpdk-sys"
+version = "0.3.0"
+dependencies = [
+ "bindgen",
+ "cc",
+ "clang",
+ "etrace",
+ "itertools 0.9.0",
+ "regex",
 ]
 
 [[package]]
@@ -786,33 +811,6 @@ name = "regex-syntax"
 version = "0.6.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24d5f089152e60f62d28b835fbff2cd2e8dc0baf1ac13343bef92ab7eed84548"
-
-[[package]]
-name = "rust-dpdk"
-version = "0.2.20021"
-dependencies = [
- "anyhow",
- "arrayvec",
- "crossbeam",
- "etrace",
- "log",
- "rust-dpdk-sys",
- "simple_logger",
- "thiserror",
-]
-
-[[package]]
-name = "rust-dpdk-sys"
-version = "0.1.20021"
-dependencies = [
- "bindgen",
- "cc",
- "clang",
- "etrace",
- "itertools 0.9.0",
- "num_cpus",
- "regex",
-]
 
 [[package]]
 name = "rustc-demangle"
