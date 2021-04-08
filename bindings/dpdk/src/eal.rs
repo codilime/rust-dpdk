@@ -1,7 +1,7 @@
 //! Wrapper for DPDK's environment abstraction layer (EAL).
 use crate::ffi;
 use arrayvec::ArrayVec;
-use crossbeam::thread::{Scope, ScopedJoinHandle};
+use crossbeam_utils::thread::{Scope, ScopedJoinHandle};
 use log::{info, warn};
 use std::convert::{TryFrom, TryInto};
 use std::ffi::CString;

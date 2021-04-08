@@ -19,7 +19,7 @@ dpdk-sys = { path = "../dpdk-sys" }
 thiserror = "1"
 log = "0.4"
 arrayvec = "0.7"
-crossbeam = "0.8"
+crossbeam-utils = "0.8"
 
 [dev-dependencies]
 anyhow = "1.0"

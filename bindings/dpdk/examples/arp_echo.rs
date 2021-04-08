@@ -123,7 +123,7 @@ fn main() -> Result<()> {
     let (port, (rxq, txq)) = eal.ports()?.swap_remove(0).init(1, 1, None);
     let lcores = eal.lcores();
 
-    crossbeam::thread::scope(|s| {
+    dpdk::thread::scope(|s| {
         lcores[0].launch(s, || {
             info!("Lcore {:?}: starting sender and receiver", 0);
             port.set_promiscuous(true);
