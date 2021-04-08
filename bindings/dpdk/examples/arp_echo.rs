@@ -124,8 +124,8 @@ fn main() -> Result<()> {
     let lcores = eal.lcores();
 
     dpdk::thread::scope(|s| {
-        lcores[0].launch(s, || {
-            info!("Lcore {:?}: starting sender and receiver", 0);
+        lcores[0].launch(s, |lcore| {
+            info!("Lcore {:?}: starting sender and receiver", lcore);
             port.set_promiscuous(true);
             port.start().unwrap();
             sender(&eal, &default_mpool, txq.into_iter().nth(0).unwrap());
@@ -133,7 +133,7 @@ fn main() -> Result<()> {
         });
 
         for &lcore in &lcores[1..] {
-            lcore.launch(s, move || {
+            lcore.launch(s, |lcore| {
                 info!("Lcore {:?}: do nothing", lcore);
             });
         }

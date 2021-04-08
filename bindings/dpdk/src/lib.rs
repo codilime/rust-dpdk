@@ -8,4 +8,10 @@ pub mod eal;
 ///
 /// This is reexported so that downstream crates don't have to manually import crossbeam and won't
 /// have version conflicts
-pub use crossbeam_utils::thread as thread;
+pub use crossbeam_utils::thread;
+
+/// Reexport of [arrayvec][arrayvec] crate
+///
+/// This is reexported so that downstream crates don't have to manually import arrayvec and won't
+/// have version conflicts
+pub use arrayvec;

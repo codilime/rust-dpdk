@@ -100,10 +100,16 @@ pub struct Port {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LCoreId(u32);
 
-impl Into<u32> for LCoreId {
+impl fmt::Display for LCoreId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<LCoreId> for u32 {
     #[inline]
-    fn into(self) -> u32 {
-        self.0
+    fn from(lcore: LCoreId) -> u32 {
+        lcore.0
     }
 }
 
@@ -116,7 +122,7 @@ impl LCoreId {
     /// Launch a thread pined to this core (scoped).
     pub fn launch<'s, 'e, F, T>(self, s: &'s Scope<'e>, f: F) -> ScopedJoinHandle<'s, T>
     where
-        F: FnOnce() -> T,
+        F: FnOnce(LCoreId) -> T,
         F: Send + 'e,
         T: Send + 'e,
     {
@@ -129,7 +135,7 @@ impl LCoreId {
             if ret < 0 {
                 warn!("Failed to set affinity on lcore {}", lcore_id);
             }
-            f()
+            f(self)
         })
     }
 }
@@ -384,6 +390,12 @@ impl RteEthConf {
 }
 
 impl UninitPort {
+    /// Returns port index.
+    #[inline]
+    pub fn port_id(&self) -> u16 {
+        self.port_id
+    }
+
     /// Initialize port. Configure specified number of rx and tx queues.
     pub fn init<MPoolPriv: Zeroable>(
         self,
