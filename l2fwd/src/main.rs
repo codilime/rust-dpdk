@@ -15,6 +15,7 @@ type Packet<'pool> = eal::Packet<'pool, PacketMeta>;
 
 #[derive(Debug, StructOpt)]
 #[structopt(usage = "l2fwd [EAL OPTIONS] -- [OPTIONS]\n    l2fwd [EAL OPTIONS]")]
+#[structopt(after_help = "Note: To print EAL help message, run: l2fwd -h --")]
 struct Opt {
     /// hexadecimal bitmask of ports to configure, no mask → all ports
     #[structopt(short, long, parse(try_from_str = utils::parse_hex), name = "PORTMASK")]
@@ -33,6 +34,11 @@ fn main() -> anyhow::Result<()> {
     simple_logger::SimpleLogger::new().init().unwrap();
 
     let mut args: Vec<String> = env::args().collect();
+    if matches!(&*args, [_, h] if matches!(&**h,  "-h" | "--help" | "-V" | "--version")) {
+        // Print application help instead of EAL's by default
+        Opt::from_iter(args);
+        unreachable!();
+    }
     let eal = Eal::new(&mut args).context("initializing EAL")?;
     let opt = Opt::from_iter(args);
 
