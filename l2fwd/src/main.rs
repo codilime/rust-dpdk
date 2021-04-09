@@ -165,13 +165,13 @@ fn forward_loop(lcore: LCoreId, fwds: Vec<ForwardDesc>) {
     let (srcs, mut dsts): (Vec<RxQ>, Vec<TxQ>) =
         fwds.into_iter().map(|fwd| (fwd.src, fwd.dst)).unzip();
 
-    // Cache dst macs. They are cheap to access (function call + memcpy),
+    // Cache src macs. They are cheap to access (function call + memcpy),
     // but that's still _some_ cost.
-    let dst_macs: Vec<_> = dsts.iter().map(|dst| dst.port().mac_addr()).collect();
+    let src_macs: Vec<_> = dsts.iter().map(|dst| dst.port().mac_addr()).collect();
 
-    let src_macs: Vec<_> = dsts
+    let dst_macs: Vec<_> = dsts
         .iter()
-        .map(|dst| get_fake_src_mac(dst.port()))
+        .map(|dst| get_fake_dst_mac(dst.port()))
         .collect();
 
     let mut bufs: Vec<ArrayVec<Packet, MAX_PKT_BURST>> =
@@ -207,6 +207,6 @@ fn set_macs(pkt: &mut Packet, src_mac: [u8; 6], dst_mac: [u8; 6]) {
     eth.set_dst_addr(EthernetAddress(dst_mac));
 }
 
-fn get_fake_src_mac(port: &Port) -> [u8; 6] {
+fn get_fake_dst_mac(port: &Port) -> [u8; 6] {
     [2, 0, 0, 0, 0, port.port_id() as u8]
 }
