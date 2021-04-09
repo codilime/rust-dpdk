@@ -1135,13 +1135,20 @@ impl EalInner {
 
         // DPDK returns number of consumed argc
         // Safety: foriegn function (safe unless there is a bug)
-        let ret = unsafe { ffi::run_with_args(dpdk_sys::rte_eal_init, &*args) };
+        let ret = unsafe {
+            ffi::run_with_args(
+                dpdk_sys::rte_eal_init,
+                |ret| (ret >= 0).then(|| (ret as usize)..),
+                args,
+            )
+        };
         if ret < 0 {
             return Err(ret.try_into().unwrap());
         }
 
         // Strip first n args and return the remaining
         args.drain(..ret as usize);
+
         Ok(EalInner {
             shared: Mutex::new(Default::default()),
         })

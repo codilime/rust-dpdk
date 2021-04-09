@@ -14,7 +14,7 @@ type RxQ = eal::RxQ<PacketMeta>;
 type Packet<'pool> = eal::Packet<'pool, PacketMeta>;
 
 #[derive(Debug, StructOpt)]
-#[structopt(usage = "l2fwd [EAL OPTIONS] -- [OPTIONS]")]
+#[structopt(usage = "l2fwd [EAL OPTIONS] -- [OPTIONS]\n    l2fwd [EAL OPTIONS]")]
 struct Opt {
     /// hexadecimal bitmask of ports to configure, no mask → all ports
     #[structopt(short, long, parse(try_from_str = utils::parse_hex), name = "PORTMASK")]
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut args: Vec<String> = env::args().collect();
     let eal = Eal::new(&mut args).context("initializing EAL")?;
-    let opt = Opt::from_iter(prepare_app_args(args));
+    let opt = Opt::from_iter(args);
 
     let lcores = eal.lcores();
     let portswq: Vec<PortWithQueues> = eal
@@ -203,13 +203,4 @@ fn set_macs(pkt: &mut Packet, src_mac: [u8; 6], dst_mac: [u8; 6]) {
 
 fn get_fake_src_mac(port: &Port) -> [u8; 6] {
     [2, 0, 0, 0, 0, port.port_id() as u8]
-}
-
-/// Convert args from "what's left after eal args" to a more conventional form
-fn prepare_app_args(mut args: Vec<String>) -> Vec<String> {
-    if args.get(0) == Some(&"--".to_owned()) {
-        args.remove(0);
-    }
-    args.insert(0, env::args().nth(0).unwrap());
-    args
 }
