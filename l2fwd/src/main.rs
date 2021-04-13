@@ -1,7 +1,7 @@
 use anyhow::Context;
-use arrayvec;
-use dpdk::arrayvec::ArrayVec;
-use dpdk::eal::{self, Eal, LCoreId, Port, TxBuffer, TxQ};
+use dpdk::arrayvec::{self, ArrayVec};
+use dpdk::eal::{self, Eal, LCoreId, Port, TxQ};
+use dpdk::tx_buffer::TxBuffer;
 use log::{info, warn};
 use smoltcp::wire::{EthernetAddress, EthernetFrame};
 use structopt::StructOpt;
@@ -192,8 +192,8 @@ fn forward_loop(eal: &Eal, lcore: LCoreId, fwds: Vec<ForwardDesc>) {
     let mut _recv = 0;
     let handle_tx_res =
         |(sent_cnt, dropped_pkts): (usize, Option<arrayvec::Drain<'_, _, MAX_PKT_BURST>>)| {
-            sent.replace(sent.get() + sent_cnt);
-            dropped.replace(dropped.get() + dropped_pkts.map_or(0, |d| d.len()));
+            sent.set(sent.get() + sent_cnt);
+            dropped.set(dropped.get() + dropped_pkts.map_or(0, |d| d.len()));
         };
 
     loop {
@@ -219,6 +219,10 @@ fn forward_loop(eal: &Eal, lcore: LCoreId, fwds: Vec<ForwardDesc>) {
 
             for mut pkt in buf.drain(..) {
                 set_macs(&mut pkt, *src_mac, *dst_mac);
+                // In the case of flush inside tx method we could avoid the next
+                // flush, but in the current implementation we can't do it
+                // because we have common prev_tsc for all fwds handled by
+                // this lcore.
                 handle_tx_res(tx_buf.tx(dst, pkt));
             }
         }

@@ -3,6 +3,8 @@
 mod ffi;
 
 pub mod eal;
+pub mod tx_buffer;
+pub mod zeroable;
 
 /// Reexport of crossbeam's [thread][crossbeam_utils::thread] module
 ///

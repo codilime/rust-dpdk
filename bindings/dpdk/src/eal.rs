@@ -1,5 +1,6 @@
 //! Wrapper for DPDK's environment abstraction layer (EAL).
 use crate::ffi;
+use crate::zeroable::Zeroable;
 use arrayvec::ArrayVec;
 use crossbeam_utils::thread::{Scope, ScopedJoinHandle};
 use log::{info, warn};
@@ -530,23 +531,6 @@ impl UninitPort {
     }
 }
 
-/// Traits for `zeroable` structures.
-///
-/// Related issue: https://github.com/rust-lang/rfcs/issues/2626
-///
-/// DPDK provides customizable per-packet metadata. However, it is initialized via
-/// `memset(.., 0, ..)`, and its destructor is not called.
-/// A structure must be safe from `MaybeUninit::zeroed().assume_init()`
-/// and it must not implement `Drop` trait.
-pub unsafe trait Zeroable: Sized {
-    fn zeroed() -> Self {
-        // Safety: contraints from this trait.
-        unsafe { MaybeUninit::zeroed().assume_init() }
-    }
-}
-
-unsafe impl Zeroable for () {}
-
 /// Abstract type for DPDK MPool
 #[derive(Debug, Clone)]
 pub struct MPool<MPoolPriv: Zeroable> {
@@ -1011,61 +995,6 @@ impl<'pool> TxQ<'pool> {
     #[inline]
     pub fn port(&self) -> &Port {
         &self.port
-    }
-}
-
-pub struct TxBuffer<'pool, MPoolPriv, const CAP: usize>
-where
-    MPoolPriv: Zeroable,
-{
-    buff: ArrayVec<Packet<'pool, MPoolPriv>, CAP>,
-}
-
-impl<'pool, MPoolPriv, const CAP: usize> TxBuffer<'pool, MPoolPriv, CAP>
-where
-    MPoolPriv: Zeroable,
-{
-    pub fn new() -> Self {
-        TxBuffer {
-            buff: ArrayVec::new(),
-        }
-    }
-
-    pub fn tx(
-        &mut self,
-        txq: &mut TxQ<'pool>,
-        pkt: Packet<'pool, MPoolPriv>,
-    ) -> (
-        usize,
-        Option<arrayvec::Drain<'_, Packet<'pool, MPoolPriv>, CAP>>,
-    ) {
-        self.buff.push(pkt);
-        if self.buff.is_full() {
-            return self.flush(txq);
-        }
-        (0, None)
-    }
-
-    pub fn flush(
-        &mut self,
-        txq: &mut TxQ<'pool>,
-    ) -> (
-        usize,
-        Option<arrayvec::Drain<'_, Packet<'pool, MPoolPriv>, CAP>>,
-    ) {
-        if self.buff.len() == 0 {
-            return (0, None);
-        }
-
-        let to_send = self.buff.len();
-        txq.tx(&mut self.buff);
-        let sent = to_send - self.buff.len();
-
-        if self.buff.is_empty() {
-            (sent, None)
-        } else {
-            (sent, Some(self.buff.drain(..)))
-        }
     }
 }
 

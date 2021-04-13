@@ -7,6 +7,7 @@ extern crate simple_logger;
 use anyhow::{anyhow, Result};
 use arrayvec::*;
 use dpdk::eal::*;
+use dpdk::zeroable::Zeroable;
 use log::{debug, info};
 use std::env;
 
