@@ -1014,6 +1014,61 @@ impl<'pool> TxQ<'pool> {
     }
 }
 
+pub struct TxBuffer<'pool, MPoolPriv, const CAP: usize>
+where
+    MPoolPriv: Zeroable,
+{
+    buff: ArrayVec<Packet<'pool, MPoolPriv>, CAP>,
+}
+
+impl<'pool, MPoolPriv, const CAP: usize> TxBuffer<'pool, MPoolPriv, CAP>
+where
+    MPoolPriv: Zeroable,
+{
+    pub fn new() -> Self {
+        TxBuffer {
+            buff: ArrayVec::new(),
+        }
+    }
+
+    pub fn tx(
+        &mut self,
+        txq: &mut TxQ<'pool>,
+        pkt: Packet<'pool, MPoolPriv>,
+    ) -> (
+        usize,
+        Option<arrayvec::Drain<'_, Packet<'pool, MPoolPriv>, CAP>>,
+    ) {
+        self.buff.push(pkt);
+        if self.buff.is_full() {
+            return self.flush(txq);
+        }
+        (0, None)
+    }
+
+    pub fn flush(
+        &mut self,
+        txq: &mut TxQ<'pool>,
+    ) -> (
+        usize,
+        Option<arrayvec::Drain<'_, Packet<'pool, MPoolPriv>, CAP>>,
+    ) {
+        if self.buff.len() == 0 {
+            return (0, None);
+        }
+
+        let to_send = self.buff.len();
+        txq.tx(&mut self.buff);
+        let sent = to_send - self.buff.len();
+
+        if self.buff.is_empty() {
+            (sent, None)
+        } else {
+            (sent, Some(self.buff.drain(..)))
+        }
+    }
+}
+
 impl Eal {
     /// Create an `Eal` instance.
     ///

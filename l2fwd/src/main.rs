@@ -1,10 +1,13 @@
 use anyhow::Context;
+use arrayvec;
 use dpdk::arrayvec::ArrayVec;
-use dpdk::eal::{self, Eal, LCoreId, Port, TxQ};
+use dpdk::eal::{self, Eal, LCoreId, Port, TxBuffer, TxQ};
 use log::{info, warn};
 use smoltcp::wire::{EthernetAddress, EthernetFrame};
 use structopt::StructOpt;
 
+use dpdk::eal::EalGlobalApi;
+use std::cell::Cell;
 use std::env;
 
 mod utils;
@@ -77,7 +80,7 @@ fn main() -> anyhow::Result<()> {
 
     dpdk::thread::scope(|scope| {
         for (lcore, fwds) in assigned_fwds {
-            lcore.launch(scope, |id| forward_loop(id, fwds));
+            lcore.launch(scope, |id| forward_loop(&eal, id, fwds));
         }
     })
     .map_err(|err| anyhow::anyhow!("{:?}", err))
@@ -147,9 +150,10 @@ fn assign_work(
     lcores.into_iter().zip(lcore_fwds).collect()
 }
 
-fn forward_loop(lcore: LCoreId, fwds: Vec<ForwardDesc>) {
-    // TODO impl buffering and flush timer
+const BURST_TX_DRAIN_US: u64 = 100;
+const US_PER_S: u64 = 1000000;
 
+fn forward_loop(eal: &Eal, lcore: LCoreId, fwds: Vec<ForwardDesc>) {
     info!("entering main loop on lcore {}", lcore);
     for fwd in &fwds {
         println!(
@@ -177,18 +181,46 @@ fn forward_loop(lcore: LCoreId, fwds: Vec<ForwardDesc>) {
     let mut bufs: Vec<ArrayVec<Packet, MAX_PKT_BURST>> =
         srcs.iter().map(|_| ArrayVec::new()).collect();
 
+    let mut tx_bufs: Vec<TxBuffer<PacketMeta, MAX_PKT_BURST>> =
+        srcs.iter().map(|_| TxBuffer::new()).collect();
+
+    let mut prev_tsc = 0;
+    let drain_tsc = (eal.get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
+
+    let sent = Cell::new(0);
+    let dropped = Cell::new(0);
+    let mut _recv = 0;
+    let handle_tx_res =
+        |(sent_cnt, dropped_pkts): (usize, Option<arrayvec::Drain<'_, _, MAX_PKT_BURST>>)| {
+            sent.replace(sent.get() + sent_cnt);
+            dropped.replace(dropped.get() + dropped_pkts.map_or(0, |d| d.len()));
+        };
+
     loop {
-        for (src, dst, src_mac, dst_mac, buf) in
-            itertools::izip!(&srcs, &mut dsts, &src_macs, &dst_macs, &mut bufs)
-        {
-            let len_before_rx = buf.len();
-            src.rx(buf);
-
-            for pkt in &mut buf[len_before_rx..] {
-                set_macs(pkt, *src_mac, *dst_mac);
+        let cur_tsc = eal.get_tsc_cycles();
+        let diff_tsc = cur_tsc - prev_tsc;
+        if diff_tsc > drain_tsc {
+            for (dst, tx_buf) in itertools::izip!(&mut dsts, &mut tx_bufs) {
+                handle_tx_res(tx_buf.flush(dst));
             }
+            prev_tsc = cur_tsc;
+        }
 
-            dst.tx(buf);
+        for (src, dst, src_mac, dst_mac, buf, tx_buf) in itertools::izip!(
+            &srcs,
+            &mut dsts,
+            &src_macs,
+            &dst_macs,
+            &mut bufs,
+            &mut tx_bufs
+        ) {
+            src.rx(buf);
+            _recv += buf.len();
+
+            for mut pkt in buf.drain(..) {
+                set_macs(&mut pkt, *src_mac, *dst_mac);
+                handle_tx_res(tx_buf.tx(dst, pkt));
+            }
         }
     }
 }
