@@ -1,10 +1,17 @@
 # rust-dpdk
 
-Bindings based on https://github.com/ANLAB-KAIST/rust-dpdk
+Rust is a programming language designed for performance and safety, especially safe concurrency. Its syntax is similar to C++, but it can guarantee memory safety using a borrow checker to validate references.
 
-Tested on Ubuntu 18.04.5 LTS. There might be some problems with building on other distributions (like Centos or Arch).
+DPDK (Data Plane Development Kit) is a set of libraries for implementing user space drivers for NICs (Network Interface Controllers). It provides a set of abstractions which allows a sophisticated packet processing pipeline to be programmed. DPDK allows for high performance while programming networking applications.
+DPDK is written in C, so using it in Rust is inconvenient and not safe without a properly prepared API. Therefore, we decided to create Rust bindings to DPDK.
+
+We are not the first ones who attempted it. We decided to base our API on some other project — https://github.com/ANLAB-KAIST/rust-dpdk. This project uses bindgen while compiling a code to generate bindings to the specified DPDK version. Thanks to that, it's not hard to update the API to the newer DPDK version. Additionally, a good deal of the high-level API was already well written so we didn't need to write it from scratch. Ultimately, we only added a few features to this library and fixed some issues.
+
+The interface for communication with DPDK has been designed in such a way that the programmer doesn't have to remember not obvious dependencies that could often cause errors in DPDK applications. Check [l2fwd sources](l2fwd/src/main.rs) for reference.
 
 ## Environment setup
+
+Tested on Ubuntu 18.04.5 LTS. There might be some problems with building on other distributions (like Centos or Arch).
 
 Below are instructions on how to prepare a VM with two interfaces passed to DPDK application. These steps are not required if you want to start it with a different environment.
 
@@ -101,6 +108,8 @@ modprobe igb_uio
 /path/to/dpdk/usertools/dpdk-devbind.py -b igb_uio 00:04.0 00:05.0
 ```
 
+Also, Rust should be available - https://www.rust-lang.org/tools/install.
+
 ## Building and starting examples
 
 First, build and install DPDK (tested with DPDK 20.11 but should work with newer versions too):
@@ -120,7 +129,5 @@ cd offload-okr/rust-dpdk/apps
 # DPDK_INSTALL_PATH must be set to start the building script.
 # One can set it with the following command (if it's not set already):
 # export DPDK_INSTALL_PATH=/path/to/installed/dpdk
-cargo build
-cargo run --example helloworld
-cargo run --example l2fwd -- -- -p 3
+cargo run --release --bin l2fwd
 ```
