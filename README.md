@@ -1,5 +1,7 @@
 # rust-dpdk
 
+Bindings based on https://github.com/ANLAB-KAIST/rust-dpdk
+
 Tested on Ubuntu 18.04.5 LTS. There might be some problems with building on other distributions (like Centos or Arch).
 
 ## Environment setup
