@@ -8,7 +8,7 @@ We've performed tests in two bare-metal environment. Each machine had a NIC with
 
 <img src="./l2fwd_trex_env.svg" width="100%">
 
-L2fwd BM specification:
+L2fwd was running on a single core of Intel Xeon Gold 6252 CPU and used a single RX and TX queue for traffic management. More detailed l2fwd BM specification:
 
 ```
 lshw -class processor
