@@ -1,0 +1,23 @@
+[package]
+edition = "2018"
+name = "dpdk-sys"
+version = "0.3.0"
+authors = ["Keunhong Lee <dlrmsghd@gmail.com>", "Jeehoon Kang <jeehoon.kang@kaist.ac.kr>", "ANLAB <support@an.kaist.ac.kr>"]
+
+homepage = "https://github.com/ANLAB-KAIST/rust-dpdk"
+repository = "https://github.com/ANLAB-KAIST/rust-dpdk"
+documentation = "https://github.com/ANLAB-KAIST/rust-dpdk"
+license = "BSD-3-Clause"
+keywords = ["rust", "dpdk", "binding", "bindgen"]
+
+description = """
+Rust binding for Intel DPDK.
+"""
+
+[build-dependencies]
+bindgen = "= 0.47.3"
+regex = "1"
+clang = { version = "0.21.0", features = ["runtime", "clang_6_0"] }
+cc = "1"
+etrace = "1"
+itertools = "0.10"
