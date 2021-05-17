@@ -1,2 +1,0 @@
-#include "dpdk.h"
-%header_defs%
