@@ -16,11 +16,12 @@ use thiserror::Error;
 
 const MAGIC: &str = "be0dd4ab";
 
-pub const DEFAULT_TX_DESC: u16 = 1024;
-pub const DEFAULT_RX_DESC: u16 = 1024;
-pub const DEFAULT_RX_POOL_SIZE: usize = 8192;
-pub const DEFAULT_RX_PER_CORE_CACHE: usize = 0;
-pub const DEFAULT_PACKET_DATA_LENGTH: usize = 2048;
+pub const DEFAULT_TX_DESC: u16 = 4096;
+pub const DEFAULT_RX_DESC: u16 = 4096;
+pub const DEFAULT_RX_PER_CORE_CACHE: usize = 256;
+pub const DEFAULT_RX_POOL_SIZE: usize = DEFAULT_TX_DESC as usize + DEFAULT_RX_DESC as usize +
+    DEFAULT_RX_BURST + DEFAULT_RX_PER_CORE_CACHE;
+pub const DEFAULT_PACKET_DATA_LENGTH: usize = 2048 + 128;
 pub const DEFAULT_PROMISC: bool = true;
 pub const DEFAULT_RX_BURST: usize = 32;
 pub const DEFAULT_TX_BURST: usize = 32;

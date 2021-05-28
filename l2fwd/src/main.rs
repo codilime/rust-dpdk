@@ -1,5 +1,5 @@
 use anyhow::Context;
-use dpdk::arrayvec::{self, ArrayVec};
+use dpdk::arrayvec::ArrayVec;
 use dpdk::eal::{self, Eal, LCoreId, Port, TxQ};
 use dpdk::tx_buffer::TxBuffer;
 use log::{info, warn};
@@ -7,7 +7,6 @@ use smoltcp::wire::{EthernetAddress, EthernetFrame};
 use structopt::StructOpt;
 
 use dpdk::eal::EalGlobalApi;
-use std::cell::Cell;
 use std::env;
 
 mod utils;
@@ -187,21 +186,18 @@ fn forward_loop(eal: &Eal, lcore: LCoreId, fwds: Vec<ForwardDesc>) {
     let mut prev_tsc = 0;
     let drain_tsc = (eal.get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
 
-    let sent = Cell::new(0);
-    let dropped = Cell::new(0);
+    let mut _sent = 0;
+    let mut _dropped = 0;
     let mut _recv = 0;
-    let handle_tx_res =
-        |(sent_cnt, dropped_pkts): (usize, Option<arrayvec::Drain<'_, _, MAX_PKT_BURST>>)| {
-            sent.set(sent.get() + sent_cnt);
-            dropped.set(dropped.get() + dropped_pkts.map_or(0, |d| d.len()));
-        };
 
     loop {
         let cur_tsc = eal.get_tsc_cycles();
         let diff_tsc = cur_tsc - prev_tsc;
         if diff_tsc > drain_tsc {
             for (dst, tx_buf) in itertools::izip!(&mut dsts, &mut tx_bufs) {
-                handle_tx_res(tx_buf.flush(dst));
+                let (cur_sent, cur_dropped_iter) = tx_buf.flush(dst);
+                _sent += cur_sent;
+                _dropped += cur_dropped_iter.map_or(0, |d| d.len());
             }
             prev_tsc = cur_tsc;
         }
@@ -223,7 +219,9 @@ fn forward_loop(eal: &Eal, lcore: LCoreId, fwds: Vec<ForwardDesc>) {
                 // flush, but in the current implementation we can't do it
                 // because we have common prev_tsc for all fwds handled by
                 // this lcore.
-                handle_tx_res(tx_buf.tx(dst, pkt));
+                let (cur_sent, cur_dropped_iter) = tx_buf.tx(dst, pkt);
+                _sent += cur_sent;
+                _dropped += cur_dropped_iter.map_or(0, |d| d.len());
             }
         }
     }
