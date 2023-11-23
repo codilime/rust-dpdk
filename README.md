@@ -131,3 +131,13 @@ cd offload-okr/rust-dpdk/apps
 # export DPDK_INSTALL_PATH=/path/to/installed/dpdk
 cargo run --release --bin l2fwd
 ```
+
+## Licensing
+
+This project is licensed under the [BSD 3-Clause License](LICENSE). Please see the [LICENSE](LICENSE) file for more details.
+
+We also include the [rust-dpdk](https://github.com/ANLAB-KAIST/rust-dpdk) project in the `binding` directory, which is also licensed under the [BSD 3-Clause License](binding/LICENSE). Please note that we have made modifications to the `ANLAB-KAIST/rust-dpdk` project to suit our needs.
+
+If you have any questions or need further details, feel free to contact us.
+
+Thank you for using our repository!
