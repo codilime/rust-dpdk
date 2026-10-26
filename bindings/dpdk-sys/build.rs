@@ -109,7 +109,8 @@ impl State {
         index: &'a clang::Index,
         header_path: &Path,
     ) -> clang::TranslationUnit<'a> {
-        let mut argument = vec!["-march=native".into()];
+        // DPDK only declares rte_cpuset_t APIs (RTE_HAS_CPUSET) under _GNU_SOURCE.
+        let mut argument = vec!["-march=native".into(), "-D_GNU_SOURCE".into()];
         argument.extend(
             self.include_path
                 .iter()
@@ -292,7 +293,9 @@ impl State {
     fn make_all_in_one_header(&mut self) {
         let dpdk_config = self.dpdk_config.as_ref().unwrap();
         // dlb drivers have duplicated enum definitions.
-        let blacklist = vec!["rte_pmd_dlb", "rte_pmd_dlb2"];
+        // rte_crc_generic is an arch fallback that rte_hash_crc includes itself;
+        // pulling it in directly redefines the arch-specific CRC functions.
+        let blacklist = vec!["rte_pmd_dlb", "rte_pmd_dlb2", "rte_crc_generic"];
         let mut headers = vec![];
         for entry in self
             .include_path
@@ -670,10 +673,10 @@ impl State {
         let mut linkable_whitelist: Vec<_> = vec![
             "rte_pmd_ixgbe_set_all_queues_drop_en", // ixgbe
             "rte_pmd_i40e_ping_vfs",                // i40e
-            "e1000_igb_init_log",                   // e1000
+            "igb_dev_free_queues",                  // e1000
             "ice_release_vsi",                      // ice
             "vmxnet3_dev_tx_queue_release",         // vmxnet3
-            "virtio_dev_pause",                     // virtio
+            "virtio_dev_close",                     // virtio
             "softnic_thread_free",                  // softnic
             // "ipn3ke_hw_tm_init", // ipn3ke (currently not enabled)
             // "mlx4_fd_set_non_blocking", // mlx4 (currently not enabled)
@@ -687,10 +690,10 @@ impl State {
 
         // List of non-static PMD-specific functions used to create symbolic dependencies to PMDs.
         let mut linkable_extern_def_list: Vec<_> = vec![
-            "void e1000_igb_init_log(void)",                           // e1000
+            "void igb_dev_free_queues(struct rte_eth_dev *dev)",       // e1000
             "int ice_release_vsi(struct ice_vsi *vsi)",                // ice
             "void vmxnet3_dev_tx_queue_release(void *txq)",            // vmxnet3
-            "int virtio_dev_pause(struct rte_eth_dev *dev)",           // virtio
+            "int virtio_dev_close(struct rte_eth_dev *dev)",           // virtio
             "void softnic_thread_free(struct pmd_internals *softnic)", // softnic
             // "int ipn3ke_hw_tm_init(struct ipn3ke_hw *hw)", // ipn3ke (currently not enabled)
             // "int mlx4_fd_set_non_blocking(int fd)", // mlx4 (currently not enabled)
@@ -774,10 +777,18 @@ impl State {
             .clang_arg("-imacros")
             .clang_arg(dpdk_config_path.to_str().unwrap())
             .clang_arg("-march=native")
+            .clang_arg("-D_GNU_SOURCE")
             .clang_arg("-Wno-everything")
-            .rustfmt_bindings(true)
             .opaque_type("max_align_t")
             .opaque_type("rte_event.*")
+            // Packed + aligned, or packed containing an aligned type (rte_ether_addr):
+            // neither can be expressed in Rust.
+            .opaque_type("__tile1024i_str")
+            .opaque_type("rte_avp_desc")
+            .opaque_type("rte_arp_ipv4")
+            .opaque_type("rte_arp_hdr")
+            // Its packed rte_gtp_psc_generic_hdr field cannot derive Debug.
+            .no_debug("rte_flow_item_gtp_psc")
             .generate()
             .unwrap()
             .write_to_file(target_path)
@@ -836,9 +847,14 @@ impl State {
                 .join("\n"),
         );
 
-        if formatted_string.contains("rte_get_main_lcore") {
+        // Since DPDK 21.x rte_get_main_lcore is an exported (not static inline)
+        // function, so it only shows up in the bindgen output.
+        let bindings = std::fs::read_to_string(self.out_path.join("dpdk.rs")).unwrap_or_default();
+        let defines = |name: &str| formatted_string.contains(name) || bindings.contains(name);
+        println!(r#"cargo:rustc-check-cfg=cfg(main_lcore_name, values("main", "master"))"#);
+        if defines("rte_get_main_lcore") {
             println!(r#"cargo:rustc-cfg=main_lcore_name="main""#);
-        } else if formatted_string.contains("rte_get_master_lcore") {
+        } else if defines("rte_get_master_lcore") {
             println!(r#"cargo:rustc-cfg=main_lcore_name="master""#);
         } else {
             panic!("neither rte_get_main_lcore nor rte_get_master_lcore found");
@@ -854,7 +870,8 @@ impl State {
         let source_path = self.out_path.join("static.c");
         let lib_path = self.library_path.as_ref().unwrap();
 
-        cc::Build::new()
+        let mut build = cc::Build::new();
+        build
             .file(source_path)
             .static_flag(true)
             .shared_flag(false)
@@ -863,6 +880,14 @@ impl State {
             .include(&self.out_path)
             .flag("-w") // hide warnings
             .flag("-march=native")
+            .flag("-D_GNU_SOURCE");
+        // Every static inline gets a wrapper, including the TSX ones (rte_xbegin,
+        // rte_try_tm, ...). They fail to build on CPUs without RTM; DPDK only calls
+        // them after a runtime rte_rtm_supported() check, so enabling RTM is safe.
+        if self.machine_string.as_deref().map_or(false, |m| m.starts_with("x86_64")) {
+            build.flag("-mrtm");
+        }
+        build
             .flag("-imacros")
             .flag(dpdk_config.to_str().unwrap())
             .flag(&format!("-L{}", lib_path.to_str().unwrap()))
@@ -874,7 +899,11 @@ impl State {
             lib_path.to_str().unwrap()
         );
 
-        // Legacy mode: Rust cargo cannot recognize library groups (libdpdk.a).
+        // Link every DPDK library whole, as DPDK's own static pkg-config does
+        // for drivers: buses and PMDs register themselves from constructors in
+        // objects nothing references (e.g. virtio's PCI driver), so a plain
+        // static link drops them and EAL cannot even parse a PCI address.
+        // --gc-sections still removes unused code; constructors are roots.
         let format = Regex::new(r"lib(.*)\.(a)").unwrap();
         for link in &self.dpdk_links {
             let lib_name = link.file_name().unwrap().to_str().unwrap();
@@ -883,16 +912,78 @@ impl State {
                 let link_name = &capture[1];
                 if link_name == "dpdk" {
                     continue;
-                } else if link_name == "rte_pmd_mlx5" {
-                    // MLX5 PMD requires additional liniking of two libraries
-                    println!("cargo:rustc-link-lib=ibverbs");
-                    println!("cargo:rustc-link-lib=mlx5");
                 }
-                println!("cargo:rustc-link-lib=static={}", link_name);
+                println!("cargo:rustc-link-lib=static:+whole-archive={}", link_name);
             }
+        }
+
+        // System libraries the whole-archived objects need (libcrypto, ibverbs,
+        // libpcap, ...), linked dynamically
+        for lib in dpdk_system_libs() {
+            println!("cargo:rustc-link-lib={}", lib);
         }
         println!("cargo:rustc-link-lib=numa");
     }
+}
+
+/// System libraries DPDK's static libraries call into, linked dynamically.
+///
+/// `pkg-config --static --libs libdpdk` is too broad: it also pulls the
+/// static-only dependencies of DPDK's dependencies (e.g. libpcap's dbus and
+/// systemd, libibverbs' RDMA providers), which a dynamic link doesn't need.
+/// Instead take the plain -l flags in DPDK's own .pc files, plus the dynamic
+/// `--libs` of each package they require.
+fn dpdk_system_libs() -> Vec<String> {
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+    let pkg_config = |args: &[&str]| -> Option<String> {
+        let output = Command::new("pkg-config").args(args).output().ok()?;
+        output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let pc_dir = match pkg_config(&["--variable=pcfiledir", "libdpdk"]) {
+        Some(dir) => PathBuf::from(dir.trim()),
+        None => {
+            println!("cargo:warning=pkg-config libdpdk unavailable; linking without DPDK's system library list");
+            return vec![];
+        }
+    };
+
+    let mut flags: Vec<String> = Vec::new();
+    for pc in ["libdpdk.pc", "libdpdk-libs.pc"] {
+        let text = std::fs::read_to_string(pc_dir.join(pc)).unwrap_or_default();
+        for line in text.lines() {
+            if let Some(libs) = line.strip_prefix("Libs.private:") {
+                flags.extend(libs.split_whitespace().map(String::from));
+            } else if let Some(reqs) = line
+                .strip_prefix("Requires.private:")
+                .or_else(|| line.strip_prefix("Requires:"))
+            {
+                for req in reqs.split(',') {
+                    // "libpcap >= 1.0" -> "libpcap"; DPDK's own packages are linked above
+                    let name = match req.split_whitespace().next() {
+                        Some(name) if !name.starts_with("libdpdk") => name,
+                        _ => continue,
+                    };
+                    if let Some(libs) = pkg_config(&["--libs", name]) {
+                        flags.extend(libs.split_whitespace().map(String::from));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut libs: Vec<String> = Vec::new();
+    for flag in flags {
+        if let Some(name) = flag.strip_prefix("-l") {
+            // ":librte_*.a" entries and rte_* libraries are linked above
+            if name.starts_with(':') || name.starts_with("rte_") || name == "dpdk" {
+                continue;
+            }
+            if !libs.iter().any(|l| l == name) {
+                libs.push(name.to_string());
+            }
+        }
+    }
+    libs
 }
 
 fn main() {

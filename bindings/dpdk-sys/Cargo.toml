@@ -15,9 +15,9 @@ Rust binding for Intel DPDK.
 """
 
 [build-dependencies]
-bindgen = "= 0.47.3"
+bindgen = "0.73"
 regex = "1"
-clang = { version = "0.21.0", features = ["runtime", "clang_6_0"] }
+clang = { version = "2", features = ["runtime", "clang_10_0"] }
 cc = "1"
 etrace = "1"
 itertools = "0.10"
